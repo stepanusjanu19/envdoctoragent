@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"envdoctor/internal/command"
 )
 
 // ContainerInfo holds information about container environments
@@ -15,25 +17,27 @@ type ContainerInfo struct {
 
 // DockerInfo holds Docker-specific information
 type DockerInfo struct {
-	Installed           bool   `json:"installed"`
-	Version            string `json:"version"`
-	DaemonStatus        string `json:"daemon_status"`
-	SocketAccess        bool   `json:"socket_access"`
-	ConfigConsistency   string `json:"config_consistency"`
+	Installed         bool   `json:"installed"`
+	Version           string `json:"version"`
+	DaemonStatus      string `json:"daemon_status"`
+	SocketAccess      bool   `json:"socket_access"`
+	ConfigConsistency string `json:"config_consistency"`
 }
 
 // PodmanInfo holds Podman-specific information
 type PodmanInfo struct {
-	Installed          bool   `json:"installed"`
+	Installed         bool   `json:"installed"`
 	Version           string `json:"version"`
-	ConfigConsistency  string `json:"config_consistency"`
+	Status            string `json:"status"`
+	ConfigConsistency string `json:"config_consistency"`
 }
 
 // KubernetesInfo holds Kubernetes-specific information
 type KubernetesInfo struct {
-	Installed bool   `json:"installed"`
-	Version   string `json:"version"`
-	Context   string `json:"context"`
+	Installed    bool   `json:"installed"`
+	Version      string `json:"version"`
+	Context      string `json:"context"`
+	ConfigStatus string `json:"config_status"`
 }
 
 // CheckContainerEnvironments checks the status of container environments
@@ -64,7 +68,9 @@ func CheckContainerEnvironments() (*ContainerInfo, error) {
 // checkDocker checks Docker installation and status
 func checkDocker() (*DockerInfo, error) {
 	info := &DockerInfo{
-		Installed: false,
+		Installed:         false,
+		DaemonStatus:      "not installed",
+		ConfigConsistency: "not installed",
 	}
 
 	// Check if Docker is installed
@@ -76,7 +82,7 @@ func checkDocker() (*DockerInfo, error) {
 	info.Installed = true
 
 	// Get Docker version
-	versionOut, err := exec.Command("docker", "--version").Output()
+	versionOut, err := command.Output("docker", "--version")
 	if err == nil {
 		info.Version = strings.TrimSpace(string(versionOut))
 	}
@@ -84,30 +90,35 @@ func checkDocker() (*DockerInfo, error) {
 	// Use `docker version` instead of `docker info` for a cleaner permission/daemon check.
 	// `docker version` works without daemon permissions if the user is in the docker group,
 	// but if the daemon is down, it will clearly state it.
-	out, err := exec.Command("docker", "version").CombinedOutput()
+	out, err := command.CombinedOutput("docker", "version")
 	if err == nil {
 		info.DaemonStatus = "running"
 		info.SocketAccess = true
+		info.ConfigConsistency = checkDockerConfigConsistency()
 	} else {
-		outputStr := string(out)
+		outputStr := strings.ToLower(string(out) + " " + err.Error())
 		// Robust checking for common error messages
 		if strings.Contains(outputStr, "permission denied") ||
-			strings.Contains(outputStr, "Got permission denied") ||
+			strings.Contains(outputStr, "got permission denied") ||
 			strings.Contains(outputStr, "dial unix") {
 			info.DaemonStatus = "permission denied"
 			info.SocketAccess = false
-		} else if strings.Contains(outputStr, "Cannot connect to the Docker daemon") ||
-			strings.Contains(outputStr, "Is the docker daemon running") {
+			info.ConfigConsistency = "not available"
+		} else if strings.Contains(outputStr, "cannot connect to the docker daemon") ||
+			strings.Contains(outputStr, "is the docker daemon running") {
 			info.DaemonStatus = "not running"
 			info.SocketAccess = false
+			info.ConfigConsistency = "not available"
+		} else if strings.Contains(outputStr, "command timed out") {
+			info.DaemonStatus = "timeout"
+			info.SocketAccess = false
+			info.ConfigConsistency = "not available"
 		} else {
 			info.DaemonStatus = "unknown error"
 			info.SocketAccess = false
+			info.ConfigConsistency = "not available"
 		}
 	}
-
-	// Check configuration consistency
-	info.ConfigConsistency = checkDockerConfigConsistency()
 
 	return info, nil
 }
@@ -115,7 +126,9 @@ func checkDocker() (*DockerInfo, error) {
 // checkPodman checks Podman installation and status
 func checkPodman() (*PodmanInfo, error) {
 	info := &PodmanInfo{
-		Installed: false,
+		Installed:         false,
+		Status:            "not installed",
+		ConfigConsistency: "not installed",
 	}
 
 	// Check if Podman is installed
@@ -127,13 +140,18 @@ func checkPodman() (*PodmanInfo, error) {
 	info.Installed = true
 
 	// Get Podman version
-	versionOut, err := exec.Command("podman", "--version").Output()
+	versionOut, err := command.Output("podman", "--version")
 	if err == nil {
 		info.Version = strings.TrimSpace(string(versionOut))
 	}
 
 	// Check configuration consistency
 	info.ConfigConsistency = checkPodmanConfigConsistency()
+	if info.ConfigConsistency == "consistent" {
+		info.Status = "available"
+	} else {
+		info.Status = "not available"
+	}
 
 	return info, nil
 }
@@ -141,7 +159,8 @@ func checkPodman() (*PodmanInfo, error) {
 // checkKubernetes checks Kubernetes installation and status
 func checkKubernetes() (*KubernetesInfo, error) {
 	info := &KubernetesInfo{
-		Installed: false,
+		Installed:    false,
+		ConfigStatus: "not installed",
 	}
 
 	// Check if kubectl is installed
@@ -153,15 +172,22 @@ func checkKubernetes() (*KubernetesInfo, error) {
 	info.Installed = true
 
 	// Get kubectl version
-	versionOut, err := exec.Command("kubectl", "version", "--client").Output()
+	versionOut, err := command.Output("kubectl", "version", "--client")
 	if err == nil {
 		info.Version = strings.TrimSpace(string(versionOut))
 	}
 
 	// Get current context
-	contextOut, err := exec.Command("kubectl", "config", "current-context").Output()
+	contextOut, err := command.Output("kubectl", "config", "current-context")
 	if err == nil {
 		info.Context = strings.TrimSpace(string(contextOut))
+		if info.Context != "" {
+			info.ConfigStatus = "configured"
+		} else {
+			info.ConfigStatus = "not configured"
+		}
+	} else {
+		info.ConfigStatus = "not configured"
 	}
 
 	return info, nil
@@ -170,52 +196,52 @@ func checkKubernetes() (*KubernetesInfo, error) {
 // checkDockerConfigConsistency checks Docker configuration consistency
 func checkDockerConfigConsistency() string {
 	// Check if docker info can be retrieved
-	_, err := exec.Command("docker", "info").CombinedOutput()
+	_, err := command.CombinedOutput("docker", "info")
 	if err != nil {
 		return "inconsistent"
 	}
-	
+
 	// Check if docker version matches client and server versions
-	versionOut, err := exec.Command("docker", "version", "--format", "{{.Client.Version}}").CombinedOutput()
+	versionOut, err := command.CombinedOutput("docker", "version", "--format", "{{.Client.Version}}")
 	if err != nil {
 		return "inconsistent"
 	}
-	
+
 	clientVersion := strings.TrimSpace(string(versionOut))
-	
-	serverOut, err := exec.Command("docker", "version", "--format", "{{.Server.Version}}").CombinedOutput()
+
+	serverOut, err := command.CombinedOutput("docker", "version", "--format", "{{.Server.Version}}")
 	if err != nil {
 		return "inconsistent"
 	}
-	
+
 	serverVersion := strings.TrimSpace(string(serverOut))
-	
+
 	if clientVersion != serverVersion {
 		return "version_mismatch"
 	}
-	
+
 	return "consistent"
 }
 
 // checkPodmanConfigConsistency checks Podman configuration consistency
 func checkPodmanConfigConsistency() string {
 	// Check if podman info can be retrieved
-	_, err := exec.Command("podman", "info").CombinedOutput()
+	_, err := command.CombinedOutput("podman", "info")
 	if err != nil {
 		return "inconsistent"
 	}
-	
+
 	// Check if podman version is available
-	versionOut, err := exec.Command("podman", "version", "--format", "{{.Version}}").CombinedOutput()
+	versionOut, err := command.CombinedOutput("podman", "version", "--format", "{{.Version}}")
 	if err != nil {
 		return "inconsistent"
 	}
-	
+
 	version := strings.TrimSpace(string(versionOut))
 	if version == "" {
 		return "inconsistent"
 	}
-	
+
 	return "consistent"
 }
 
@@ -239,6 +265,7 @@ func PrintContainerInfo(info *ContainerInfo) {
 		fmt.Printf("    Installed: %t\n", info.Podman.Installed)
 		if info.Podman.Installed {
 			fmt.Printf("    Version: %s\n", info.Podman.Version)
+			fmt.Printf("    Status: %s\n", info.Podman.Status)
 			fmt.Printf("    Config Consistency: %s\n", info.Podman.ConfigConsistency)
 		}
 	}
@@ -249,6 +276,7 @@ func PrintContainerInfo(info *ContainerInfo) {
 		if info.Kubernetes.Installed {
 			fmt.Printf("    Version: %s\n", info.Kubernetes.Version)
 			fmt.Printf("    Context: %s\n", info.Kubernetes.Context)
+			fmt.Printf("    Config Status: %s\n", info.Kubernetes.ConfigStatus)
 		}
 	}
 }

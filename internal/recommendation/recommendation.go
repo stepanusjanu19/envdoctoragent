@@ -4,42 +4,275 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
-	"strings"
+
+	"envdoctor/internal/common"
+	"envdoctor/internal/container"
+	"envdoctor/internal/scanner"
+	"envdoctor/internal/system"
 )
 
-// Recommendation represents a single actionable fix suggestion
+// Recommendation represents a single actionable fix suggestion.
 type Recommendation struct {
-	Category    string `json:"category"`
-	Severity    string `json:"severity"` // critical, warning, info
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Command     string `json:"command"`    // suggested fix command
-	ManualSteps string `json:"manual_steps"` // if automatic fix is not possible
+	Category    string  `json:"category"`
+	Severity    string  `json:"severity"` // critical, warning, info
+	Source      string  `json:"source"`
+	Risk        string  `json:"risk"`
+	Confidence  float64 `json:"confidence"`
+	SafeToRun   bool    `json:"safe_to_run"`
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	Command     string  `json:"command"`      // suggested fix command, never executed by envdoctor
+	ManualSteps string  `json:"manual_steps"` // if automatic fix is not possible
 }
 
-// Report holds all recommendations
+// Report holds all recommendations.
 type Report struct {
 	Recommendations []Recommendation `json:"recommendations"`
 	Summary         string           `json:"summary"`
 }
 
-// GenerateRecommendations analyzes all available scan results and produces recommendations
+// GenerateRecommendations gathers Phase 1/2 scan data and produces recommendations.
 func GenerateRecommendations() (*Report, error) {
+	sysInfo, _ := system.Detect()
+	tools, _ := scanner.ScanToolchain()
+	pathReport, _ := scanner.ScanPath()
+	containerInfo, _ := container.CheckContainerEnvironments()
+
+	return GenerateRecommendationsFromScans(sysInfo, tools, pathReport, containerInfo), nil
+}
+
+// GenerateRecommendationsFromScans produces recommendations from already-collected scan data.
+func GenerateRecommendationsFromScans(sysInfo *common.SystemInfo, tools []common.ToolInfo, pathReport *common.PathReport, containerInfo *container.ContainerInfo) *Report {
 	var recs []Recommendation
 
-	// 1. System-level recommendations
-	recs = append(recs, analyzeSystem()...)
+	recs = append(recs, analyzeSystem(sysInfo)...)
+	recs = append(recs, analyzePath(pathReport)...)
+	recs = append(recs, analyzeToolchain(tools)...)
+	recs = append(recs, analyzeContainer(containerInfo)...)
 
-	// 2. PATH recommendations
-	recs = append(recs, analyzePath()...)
+	return &Report{
+		Recommendations: recs,
+		Summary:         summarize(recs),
+	}
+}
 
-	// 3. Toolchain recommendations
-	recs = append(recs, analyzeToolchain()...)
+func analyzeSystem(info *common.SystemInfo) []Recommendation {
+	if info == nil {
+		return []Recommendation{
+			{
+				Category:    "System",
+				Severity:    "warning",
+				Source:      "system",
+				Risk:        "low",
+				Confidence:  0.70,
+				SafeToRun:   true,
+				Title:       "System information could not be collected",
+				Description: "Environment diagnosis is less complete without OS, kernel, architecture, and shell information.",
+				ManualSteps: "Run envdoctor system and inspect any command or permission error.",
+			},
+		}
+	}
 
-	// 4. Container recommendations
-	recs = append(recs, analyzeContainer()...)
+	var recs []Recommendation
+	if info.Kernel == "" || info.Kernel == "unknown" {
+		recs = append(recs, Recommendation{
+			Category:    "System",
+			Severity:    "info",
+			Source:      "system",
+			Risk:        "low",
+			Confidence:  0.65,
+			SafeToRun:   true,
+			Title:       "Kernel version is unknown",
+			Description: "Some environment recommendations may be less precise when the kernel version cannot be detected.",
+			ManualSteps: "Check whether uname or platform-specific system commands are available.",
+		})
+	}
+	if info.Shell == "" {
+		recs = append(recs, Recommendation{
+			Category:    "System",
+			Severity:    "info",
+			Source:      "system",
+			Risk:        "low",
+			Confidence:  0.65,
+			SafeToRun:   true,
+			Title:       "Shell could not be detected",
+			Description: "PATH and environment configuration fixes may require knowing the active shell.",
+			ManualSteps: "Inspect SHELL or COMSPEC and your terminal profile configuration.",
+		})
+	}
+	return recs
+}
 
-	// Build summary
+func analyzePath(report *common.PathReport) []Recommendation {
+	if report == nil {
+		return nil
+	}
+
+	var recs []Recommendation
+	for _, issue := range report.Issues {
+		switch issue.Type {
+		case "missing", "not-directory", "broken-symlink":
+			recs = append(recs, Recommendation{
+				Category:    "PATH",
+				Severity:    "warning",
+				Source:      "path",
+				Risk:        "medium",
+				Confidence:  0.90,
+				SafeToRun:   false,
+				Title:       fmt.Sprintf("Invalid PATH entry: %s", issue.Entry),
+				Description: issue.Description,
+				ManualSteps: "Remove or fix this PATH entry in your shell profile or environment configuration.",
+			})
+		case "duplicate":
+			recs = append(recs, Recommendation{
+				Category:    "PATH",
+				Severity:    "info",
+				Source:      "path",
+				Risk:        "low",
+				Confidence:  0.85,
+				SafeToRun:   false,
+				Title:       fmt.Sprintf("Duplicate PATH entry: %s", issue.Entry),
+				Description: issue.Description,
+				ManualSteps: "Remove duplicate PATH entries to keep command lookup predictable.",
+			})
+		case "empty":
+			recs = append(recs, Recommendation{
+				Category:    "PATH",
+				Severity:    "warning",
+				Source:      "path",
+				Risk:        "medium",
+				Confidence:  0.85,
+				SafeToRun:   false,
+				Title:       "Empty PATH entry detected",
+				Description: issue.Description,
+				ManualSteps: "Remove empty separators from PATH to avoid implicitly searching the current directory.",
+			})
+		}
+	}
+	return recs
+}
+
+func analyzeToolchain(tools []common.ToolInfo) []Recommendation {
+	byCommand := make(map[string]common.ToolInfo, len(tools))
+	for _, tool := range tools {
+		byCommand[tool.Name] = tool
+	}
+
+	var recs []Recommendation
+	if !toolFound(byCommand, "Git") {
+		recs = append(recs, missingToolRecommendation("Git", "Version control and repository workflows usually require Git.", "Install Git from your OS package manager or https://git-scm.com."))
+	}
+	if !toolFound(byCommand, "Python") && !toolFound(byCommand, "Python3") {
+		recs = append(recs, missingToolRecommendation("Python", "Python is required by many development tools and project scripts.", "Install Python 3 and verify python3 --version."))
+	}
+	if !toolFound(byCommand, "Node.js") {
+		recs = append(recs, missingToolRecommendation("Node.js", "Node.js is required for JavaScript, TypeScript, and many frontend toolchains.", "Install Node.js or use a version manager such as nvm."))
+	}
+	return recs
+}
+
+func missingToolRecommendation(name, description, manual string) Recommendation {
+	return Recommendation{
+		Category:    "Toolchain",
+		Severity:    "warning",
+		Source:      "toolchain",
+		Risk:        "medium",
+		Confidence:  0.90,
+		SafeToRun:   false,
+		Title:       fmt.Sprintf("%s is not installed", name),
+		Description: description,
+		ManualSteps: manual,
+	}
+}
+
+func analyzeContainer(info *container.ContainerInfo) []Recommendation {
+	if info == nil {
+		return nil
+	}
+
+	var recs []Recommendation
+	if info.Docker != nil && info.Docker.Installed {
+		switch info.Docker.DaemonStatus {
+		case "permission denied":
+			recs = append(recs, Recommendation{
+				Category:    "Container",
+				Severity:    "critical",
+				Source:      "container",
+				Risk:        "high",
+				Confidence:  0.90,
+				SafeToRun:   false,
+				Title:       "Docker daemon permission denied",
+				Description: "The current user cannot access the Docker daemon.",
+				Command:     "sudo usermod -aG docker $USER",
+				ManualSteps: "On Linux, add the user to the docker group and log out/in. On macOS or Windows, check Docker Desktop permissions and context.",
+			})
+		case "not running":
+			recs = append(recs, Recommendation{
+				Category:    "Container",
+				Severity:    "critical",
+				Source:      "container",
+				Risk:        "medium",
+				Confidence:  0.90,
+				SafeToRun:   false,
+				Title:       "Docker daemon is not running",
+				Description: "Docker commands will fail until the daemon is started.",
+				Command:     dockerStartCommand(),
+				ManualSteps: "Start Docker Desktop or the Docker service, then re-run envdoctor scan container.",
+			})
+		case "timeout":
+			recs = append(recs, Recommendation{
+				Category:    "Container",
+				Severity:    "warning",
+				Source:      "container",
+				Risk:        "low",
+				Confidence:  0.75,
+				SafeToRun:   true,
+				Title:       "Docker check timed out",
+				Description: "Docker CLI did not return before the diagnostic timeout.",
+				ManualSteps: "Run docker version manually and inspect Docker Desktop or daemon startup state.",
+			})
+		}
+	}
+
+	if info.Podman != nil && info.Podman.Installed && info.Podman.Status == "not available" {
+		recs = append(recs, Recommendation{
+			Category:    "Container",
+			Severity:    "warning",
+			Source:      "container",
+			Risk:        "low",
+			Confidence:  0.80,
+			SafeToRun:   false,
+			Title:       "Podman is installed but not available",
+			Description: "Podman exists on PATH, but podman info did not report a healthy runtime.",
+			ManualSteps: "Start or initialize the Podman machine/runtime, then run podman info.",
+		})
+	}
+
+	if info.Kubernetes != nil && info.Kubernetes.Installed && info.Kubernetes.ConfigStatus == "not configured" {
+		recs = append(recs, Recommendation{
+			Category:    "Kubernetes",
+			Severity:    "info",
+			Source:      "container",
+			Risk:        "low",
+			Confidence:  0.80,
+			SafeToRun:   true,
+			Title:       "kubectl is installed but not configured",
+			Description: "kubectl is present, but no current context was detected.",
+			ManualSteps: "Configure kubeconfig or select a context with kubectl config use-context.",
+		})
+	}
+
+	return recs
+}
+
+func dockerStartCommand() string {
+	if runtime.GOOS == "linux" {
+		return "sudo systemctl start docker"
+	}
+	return ""
+}
+
+func summarize(recs []Recommendation) string {
 	critical := 0
 	warning := 0
 	info := 0
@@ -53,134 +286,10 @@ func GenerateRecommendations() (*Report, error) {
 			info++
 		}
 	}
-
-	summary := fmt.Sprintf("Found %d recommendations (critical: %d, warning: %d, info: %d)", len(recs), critical, warning, info)
-
-	return &Report{
-		Recommendations: recs,
-		Summary:         summary,
-	}, nil
+	return fmt.Sprintf("Found %d recommendations (critical: %d, warning: %d, info: %d)", len(recs), critical, warning, info)
 }
 
-// analyzeSystem checks for common system-level issues
-func analyzeSystem() []Recommendation {
-	var recs []Recommendation
-
-	// Check if running on outdated OS (simple heuristic)
-	if runtime.GOOS == "linux" {
-		// Check if system is up to date using package manager
-		if cmdExists("dnf") {
-			out, err := exec.Command("dnf", "check-update", "-q").Output()
-			if err == nil && len(out) > 0 {
-				recs = append(recs, Recommendation{
-					Category:    "System",
-					Severity:    "warning",
-					Title:       "System packages are outdated",
-					Description: "Your system has available package updates. Keeping packages updated ensures security and stability.",
-					Command:     "sudo dnf update -y",
-				})
-			}
-		} else if cmdExists("apt") {
-			out, err := exec.Command("apt", "list", "--upgradable", "-qq").Output()
-			if err == nil && len(out) > 0 {
-				recs = append(recs, Recommendation{
-					Category:    "System",
-					Severity:    "warning",
-					Title:       "System packages are outdated",
-					Description: "Your system has available package updates. Keeping packages updated ensures security and stability.",
-					Command:     "sudo apt update && sudo apt upgrade -y",
-				})
-			}
-		}
-	}
-
-	return recs
-}
-
-// analyzePath checks PATH issues
-func analyzePath() []Recommendation {
-	var recs []Recommendation
-
-	// This will be called by the diagnose command
-	// Placeholder for PATH-specific recommendations
-
-	return recs
-}
-
-// analyzeToolchain checks for missing or outdated tools
-func analyzeToolchain() []Recommendation {
-	var recs []Recommendation
-
-	// Check for missing Git
-	if !cmdExists("git") {
-		recs = append(recs, Recommendation{
-			Category:    "Toolchain",
-			Severity:    "critical",
-			Title:       "Git is not installed",
-			Description: "Git is required for most development workflows including cloning repositories and version control.",
-			ManualSteps: "Install Git using your package manager (e.g., sudo dnf install git or sudo apt install git)",
-		})
-	}
-
-	// Check for missing Python
-	if !cmdExists("python") && !cmdExists("python3") {
-		recs = append(recs, Recommendation{
-			Category:    "Toolchain",
-			Severity:    "warning",
-			Title:       "Python is not installed",
-			Description: "Python is commonly used for scripting, data science, and many development tools.",
-			ManualSteps: "Install Python 3 using your package manager (e.g., sudo dnf install python3 or sudo apt install python3)",
-		})
-	}
-
-	// Check for missing Node.js
-	if !cmdExists("node") {
-		recs = append(recs, Recommendation{
-			Category:    "Toolchain",
-			Severity:    "info",
-			Title:       "Node.js is not installed",
-			Description: "Node.js is required for JavaScript/TypeScript development and modern front-end tooling.",
-			ManualSteps: "Install Node.js from https://nodejs.org or use your package manager",
-		})
-	}
-
-	return recs
-}
-
-// analyzeContainer checks container environment for issues
-func analyzeContainer() []Recommendation {
-	var recs []Recommendation
-
-	// Check Docker daemon status
-	if cmdExists("docker") {
-		out, err := exec.Command("docker", "version").CombinedOutput()
-		if err != nil {
-			output := string(out)
-			if strings.Contains(output, "permission denied") {
-				recs = append(recs, Recommendation{
-					Category:    "Container",
-					Severity:    "critical",
-					Title:       "Docker daemon permission denied",
-					Description: "Your user does not have permission to access the Docker daemon. This prevents running Docker commands without sudo.",
-					Command:     "sudo usermod -aG docker $USER",
-					ManualSteps: "Log out and log back in for the group change to take effect, or run 'newgrp docker'",
-				})
-			} else if strings.Contains(output, "Cannot connect") {
-				recs = append(recs, Recommendation{
-					Category:    "Container",
-					Severity:    "critical",
-					Title:       "Docker daemon is not running",
-					Description: "The Docker daemon is not running. Docker commands will fail until the daemon is started.",
-					Command:     "sudo systemctl start docker",
-				})
-			}
-		}
-	}
-
-	return recs
-}
-
-// PrintReport prints the recommendation report
+// PrintReport prints the recommendation report.
 func PrintReport(report *Report) {
 	fmt.Println(report.Summary)
 	fmt.Println()
@@ -193,15 +302,21 @@ func PrintReport(report *Report) {
 	for i, rec := range report.Recommendations {
 		fmt.Printf("--- Recommendation %d ---\n", i+1)
 		fmt.Printf("[%s] [%s] %s\n", rec.Severity, rec.Category, rec.Title)
+		fmt.Printf("Source: %s | Risk: %s | Confidence: %.2f | Safe to run: %t\n", rec.Source, rec.Risk, rec.Confidence, rec.SafeToRun)
 		fmt.Printf("Description: %s\n", rec.Description)
 		if rec.Command != "" {
-			fmt.Printf("Fix: %s\n", rec.Command)
+			fmt.Printf("Suggested command: %s\n", rec.Command)
 		}
 		if rec.ManualSteps != "" {
 			fmt.Printf("Manual steps: %s\n", rec.ManualSteps)
 		}
 		fmt.Println()
 	}
+}
+
+func toolFound(tools map[string]common.ToolInfo, name string) bool {
+	tool, ok := tools[name]
+	return ok && tool.Found
 }
 
 func cmdExists(cmd string) bool {

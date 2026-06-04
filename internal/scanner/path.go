@@ -3,6 +3,8 @@ package scanner
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"envdoctor/internal/common"
@@ -31,20 +33,33 @@ func ScanPath() (*common.PathReport, error) {
 			continue
 		}
 
+		normalized := normalizePathEntry(entry)
+
 		// Check duplicates
-		if seen[entry] {
+		if seen[normalized] {
 			// Only report each duplicate path once
-			if !reported[entry] {
+			if !reported[normalized] {
 				report.Issues = append(report.Issues, common.PathIssue{
 					Type:        "duplicate",
 					Entry:       entry,
 					Description: "Duplicate PATH entry",
 				})
-				reported[entry] = true
+				reported[normalized] = true
 			}
 			continue
 		}
-		seen[entry] = true
+		seen[normalized] = true
+
+		// Check broken symlinks before os.Stat, because os.Stat follows the
+		// link and reports a missing target as a missing path.
+		if isBrokenSymlink(entry) {
+			report.Issues = append(report.Issues, common.PathIssue{
+				Type:        "broken-symlink",
+				Entry:       entry,
+				Description: "Broken symbolic link",
+			})
+			continue
+		}
 
 		// Check existence
 		info, err := os.Stat(entry)
@@ -74,15 +89,6 @@ func ScanPath() (*common.PathReport, error) {
 			})
 			continue
 		}
-
-		// Check broken symlinks
-		if isBrokenSymlink(entry) {
-			report.Issues = append(report.Issues, common.PathIssue{
-				Type:        "broken-symlink",
-				Entry:       entry,
-				Description: "Broken symbolic link",
-			})
-		}
 	}
 
 	report.IssueCount = len(report.Issues)
@@ -93,6 +99,17 @@ func splitPath(path string) []string {
 	separator := string(os.PathListSeparator)
 	parts := strings.Split(path, separator)
 	return parts
+}
+
+func normalizePathEntry(entry string) string {
+	normalized := filepath.Clean(entry)
+	if resolved, err := filepath.EvalSymlinks(normalized); err == nil {
+		normalized = resolved
+	}
+	if runtime.GOOS == "windows" {
+		normalized = strings.ToLower(normalized)
+	}
+	return normalized
 }
 
 func isBrokenSymlink(path string) bool {

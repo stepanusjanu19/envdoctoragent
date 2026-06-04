@@ -26,7 +26,7 @@ type PathIssue struct {
 
 // PathReport summarizes PATH analysis
 type PathReport struct {
-	Entries   []string   `json:"entries"`
-	Issues    []PathIssue `json:"issues"`
-	IssueCount int       `json:"issue_count"`
+	Entries    []string    `json:"entries"`
+	Issues     []PathIssue `json:"issues"`
+	IssueCount int         `json:"issue_count"`
 }

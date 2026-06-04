@@ -13,10 +13,10 @@ import (
 )
 
 type Report struct {
-	SystemInfo      *common.SystemInfo        `json:"system"`
-	Toolchain       []common.ToolInfo         `json:"toolchain"`
-	PathReport      *common.PathReport        `json:"path"`
-	ContainerInfo   *container.ContainerInfo  `json:"container,omitempty"`
+	SystemInfo      *common.SystemInfo              `json:"system"`
+	Toolchain       []common.ToolInfo               `json:"toolchain"`
+	PathReport      *common.PathReport              `json:"path"`
+	ContainerInfo   *container.ContainerInfo        `json:"container,omitempty"`
 	Recommendations []recommendation.Recommendation `json:"recommendations,omitempty"`
 }
 
@@ -46,8 +46,8 @@ func Run() (*Report, error) {
 		report.ContainerInfo = containerInfo
 	}
 
-	recReport, err := recommendation.GenerateRecommendations()
-	if err == nil && recReport != nil {
+	recReport := recommendation.GenerateRecommendationsFromScans(report.SystemInfo, report.Toolchain, report.PathReport, report.ContainerInfo)
+	if recReport != nil {
 		report.Recommendations = recReport.Recommendations
 	}
 
@@ -95,54 +95,6 @@ func Print(r *Report) {
 	}
 }
 
-func PrintJSON(r *Report) {
-	data, err := json.MarshalIndent(r, "", " ")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error marshaling to JSON: %v\n", err)
-		return
-	}
-	fmt.Println(string(data))
-}
-
-
-	report.SystemInfo = sysInfo
-
-	// Toolchain scan
-	tools, err := scanner.ScanToolchain()
-	if err != nil {
-		return report, fmt.Errorf("failed to scan toolchain: %v", err)
-	}
-	report.Toolchain = tools
-
-	// Path analysis
-	pathReport, err := scanner.ScanPath()
-	if err != nil {
-		return report, fmt.Errorf("failed to scan path: %v", err)
-	}
-	report.PathReport = pathReport
-
-	return report, nil
-}
-
-// Print prints the diagnosis report in a human-readable format
-func Print(r *Report) {
-	fmt.Println("=== System Information ===")
-	if r.SystemInfo != nil {
-		system.Print(r.SystemInfo)
-	}
-
-	fmt.Println()
-	fmt.Println("=== Toolchain Scan ===")
-	scanner.PrintToolchain(r.Toolchain)
-
-	fmt.Println()
-	fmt.Println("=== PATH Analysis ===")
-	if r.PathReport != nil {
-		scanner.PrintPathReport(r.PathReport)
-	}
-}
-
-// PrintJSON prints the diagnosis report in JSON format
 func PrintJSON(r *Report) {
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {

@@ -5,14 +5,15 @@ import (
 	"os/exec"
 	"strings"
 
+	"envdoctor/internal/command"
 	"envdoctor/internal/common"
 )
 
 // toolDef defines a tool and the CLI arguments used to fetch its version.
 type toolDef struct {
-	Name      string
-	Cmd       string
-	Args      []string
+	Name string
+	Cmd  string
+	Args []string
 	// Some tools (python, go, rustc) write version to stderr.
 	// We will use CombinedOutput to capture both stdout and stderr.
 }
@@ -63,7 +64,7 @@ func detectTool(t toolDef) common.ToolInfo {
 	info.Path = cmdPath
 
 	// Use CombinedOutput to capture both stdout and stderr.
-	out, err := exec.Command(t.Cmd, t.Args...).CombinedOutput()
+	out, err := command.CombinedOutput(t.Cmd, t.Args...)
 	if err != nil {
 		// Even if the exit code is non-zero, we still have output we can parse.
 		if len(out) == 0 {

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"envdoctor/internal/analyzer"
@@ -98,12 +100,12 @@ Supports Linux, Windows, and macOS.`,
 			if len(args) > 0 {
 				dir = args[0]
 			}
-			deps, err := dependencies.AnalyzeDependencies(dir)
+			deps, err := dependencies.AnalyzeAllDependencies(dir)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error analyzing dependencies: %v\n", err)
 				os.Exit(1)
 			}
-			dependencies.PrintDependencies(deps)
+			dependencies.PrintAllDependencies(deps)
 		},
 	}
 
@@ -132,6 +134,7 @@ Supports Linux, Windows, and macOS.`,
 	}
 
 	// explain command (Log Analyzer)
+	var explainJSON bool
 	var explainCmd = &cobra.Command{
 		Use:   "explain <logfile>",
 		Short: "Analyze a log file and provide root-cause analysis",
@@ -143,9 +146,14 @@ Supports Linux, Windows, and macOS.`,
 				fmt.Fprintf(os.Stderr, "Error analyzing log: %v\n", err)
 				os.Exit(1)
 			}
-			analyzer.PrintAnalysis(result)
+			if explainJSON {
+				printJSON(result)
+			} else {
+				analyzer.PrintAnalysis(result)
+			}
 		},
 	}
+	explainCmd.Flags().BoolVar(&explainJSON, "json", false, "Output in JSON format")
 
 	// dockerize command (Dockerfile Generator)
 	var dockerizeCmd = &cobra.Command{
@@ -162,22 +170,29 @@ Supports Linux, Windows, and macOS.`,
 				fmt.Fprintf(os.Stderr, "Error generating Dockerfile: %v\n", err)
 				os.Exit(1)
 			}
-			
-			// Check for --save flag
+
+			output, _ := cmd.Flags().GetString("output")
+			force, _ := cmd.Flags().GetBool("force")
 			save, _ := cmd.Flags().GetBool("save")
-			if save {
-				err := dockerize.SaveDockerfile(content, dir)
+			if save || output != "" {
+				target := output
+				if target == "" {
+					target = filepath.Join(dir, "Dockerfile")
+				}
+				err := dockerize.SaveDockerfileTo(content, target, force)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error saving Dockerfile: %v\n", err)
 					os.Exit(1)
 				}
-				fmt.Println("Dockerfile saved successfully.")
+				fmt.Printf("Dockerfile saved to %s\n", target)
 			} else {
 				fmt.Println(content)
 			}
 		},
 	}
 	dockerizeCmd.Flags().Bool("save", false, "Save the generated Dockerfile to disk")
+	dockerizeCmd.Flags().String("output", "", "Write the generated Dockerfile to the specified file")
+	dockerizeCmd.Flags().Bool("force", false, "Overwrite an existing Dockerfile or output file")
 
 	// snapshot command
 	var snapshotCmd = &cobra.Command{
@@ -192,8 +207,12 @@ Supports Linux, Windows, and macOS.`,
 
 			// Check for --save flag
 			save, _ := cmd.Flags().GetBool("save")
-			if save {
-				filename := fmt.Sprintf("snapshot-%s.json", time.Now().Format("2006-01-02"))
+			output, _ := cmd.Flags().GetString("output")
+			if save || output != "" {
+				filename := output
+				if filename == "" {
+					filename = snapshot.DefaultFilename(time.Now())
+				}
 				err := snapshot.SaveSnapshot(snap, filename)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error saving snapshot: %v\n", err)
@@ -206,6 +225,7 @@ Supports Linux, Windows, and macOS.`,
 		},
 	}
 	snapshotCmd.Flags().Bool("save", false, "Save the snapshot to a file")
+	snapshotCmd.Flags().String("output", "", "Write the snapshot to the specified file")
 
 	// compare command
 	var compareCmd = &cobra.Command{
@@ -234,6 +254,7 @@ Supports Linux, Windows, and macOS.`,
 	scanCmd.AddCommand(scanToolchainCmd, scanPathCmd, scanContainerCmd, scanDependenciesCmd)
 
 	// recommend command
+	var recommendJSON bool
 	var recommendCmd = &cobra.Command{
 		Use:   "recommend",
 		Short: "Generate actionable recommendations for detected environment issues",
@@ -243,9 +264,14 @@ Supports Linux, Windows, and macOS.`,
 				fmt.Fprintf(os.Stderr, "Error generating recommendations: %v\n", err)
 				os.Exit(1)
 			}
-			recommendation.PrintReport(report)
+			if recommendJSON {
+				printJSON(report)
+			} else {
+				recommendation.PrintReport(report)
+			}
 		},
 	}
+	recommendCmd.Flags().BoolVar(&recommendJSON, "json", false, "Output in JSON format")
 
 	rootCmd.AddCommand(systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd)
 
@@ -253,4 +279,13 @@ Supports Linux, Windows, and macOS.`,
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func printJSON(value interface{}) {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error marshaling JSON: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(data))
 }
