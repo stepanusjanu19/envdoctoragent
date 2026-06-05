@@ -1,4 +1,4 @@
-module envdoctor
+module github.com/stepanusjanu19/envdoctoragent
 
 go 1.26.3
 
