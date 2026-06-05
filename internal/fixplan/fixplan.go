@@ -12,17 +12,22 @@ import (
 
 // Action is a non-mutating repair suggestion.
 type Action struct {
-	Category      string  `json:"category"`
-	Source        string  `json:"source"`
-	Title         string  `json:"title"`
-	Description   string  `json:"description,omitempty"`
-	Command       string  `json:"command,omitempty"`
-	ManualSteps   string  `json:"manual_steps,omitempty"`
-	Risk          string  `json:"risk"`
-	RequiresAdmin bool    `json:"requires_admin"`
-	SafeToRun     bool    `json:"safe_to_run"`
-	Confidence    float64 `json:"confidence"`
-	Status        string  `json:"status"`
+	ID            string   `json:"id,omitempty"`
+	Category      string   `json:"category"`
+	Source        string   `json:"source"`
+	Title         string   `json:"title"`
+	Description   string   `json:"description,omitempty"`
+	Command       string   `json:"command,omitempty"`
+	Args          []string `json:"args,omitempty"`
+	ManualSteps   string   `json:"manual_steps,omitempty"`
+	WorkingDir    string   `json:"working_dir,omitempty"`
+	Risk          string   `json:"risk"`
+	RequiresAdmin bool     `json:"requires_admin"`
+	SafeToRun     bool     `json:"safe_to_run"`
+	Timeout       string   `json:"timeout,omitempty"`
+	RollbackHint  string   `json:"rollback_hint,omitempty"`
+	Confidence    float64  `json:"confidence"`
+	Status        string   `json:"status"`
 }
 
 // Report contains safe fix plan actions.
@@ -72,6 +77,7 @@ func Generate(dir string) (*Report, error) {
 		})
 	}
 
+	actions = finalizeActions(actions)
 	return &Report{
 		Platform: runtime.GOOS,
 		Actions:  actions,
@@ -165,4 +171,22 @@ func fromVersionAction(action version.PlanAction) Action {
 
 func commandRequiresAdmin(command string) bool {
 	return len(command) >= 5 && command[:5] == "sudo "
+}
+
+func finalizeActions(actions []Action) []Action {
+	for i := range actions {
+		if actions[i].ID == "" {
+			actions[i].ID = fmt.Sprintf("fix-%03d", i+1)
+		}
+		if actions[i].Status == "" {
+			actions[i].Status = "plan-only"
+		}
+		if actions[i].Timeout == "" && actions[i].Command != "" {
+			actions[i].Timeout = "2m"
+		}
+		if actions[i].RollbackHint == "" && actions[i].Command != "" {
+			actions[i].RollbackHint = "Use the pre-apply snapshot and version control to inspect and manually revert changes."
+		}
+	}
+	return actions
 }

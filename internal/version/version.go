@@ -66,15 +66,21 @@ type ScanReport struct {
 
 // PlanAction is a non-mutating version manager suggestion.
 type PlanAction struct {
-	Runtime       string `json:"runtime"`
-	Title         string `json:"title"`
-	Command       string `json:"command,omitempty"`
-	ManualSteps   string `json:"manual_steps,omitempty"`
-	Risk          string `json:"risk"`
-	RequiresAdmin bool   `json:"requires_admin"`
-	Platform      string `json:"platform"`
-	Manager       string `json:"manager,omitempty"`
-	SafeToRun     bool   `json:"safe_to_run"`
+	ID            string   `json:"id,omitempty"`
+	Runtime       string   `json:"runtime"`
+	Title         string   `json:"title"`
+	Command       string   `json:"command,omitempty"`
+	Args          []string `json:"args,omitempty"`
+	ManualSteps   string   `json:"manual_steps,omitempty"`
+	WorkingDir    string   `json:"working_dir,omitempty"`
+	Risk          string   `json:"risk"`
+	RequiresAdmin bool     `json:"requires_admin"`
+	Platform      string   `json:"platform"`
+	Manager       string   `json:"manager,omitempty"`
+	SafeToRun     bool     `json:"safe_to_run"`
+	Timeout       string   `json:"timeout,omitempty"`
+	RollbackHint  string   `json:"rollback_hint,omitempty"`
+	Source        string   `json:"source,omitempty"`
 }
 
 // PlanReport contains version scan data and suggested actions.
@@ -141,12 +147,30 @@ func Plan(dir string) (*PlanReport, error) {
 		return nil, err
 	}
 
-	actions := planActions(scan)
+	actions := finalizePlanActions(planActions(scan))
 	return &PlanReport{
 		Scan:    scan,
 		Actions: actions,
 		Summary: fmt.Sprintf("Generated %d version plan actions", len(actions)),
 	}, nil
+}
+
+func finalizePlanActions(actions []PlanAction) []PlanAction {
+	for i := range actions {
+		if actions[i].ID == "" {
+			actions[i].ID = fmt.Sprintf("version-%03d", i+1)
+		}
+		if actions[i].Source == "" {
+			actions[i].Source = "version"
+		}
+		if actions[i].Timeout == "" && actions[i].Command != "" {
+			actions[i].Timeout = "5m"
+		}
+		if actions[i].RollbackHint == "" && actions[i].Command != "" {
+			actions[i].RollbackHint = "Use the version manager to switch back to the previous runtime version."
+		}
+	}
+	return actions
 }
 
 func detectManagers() []ManagerInfo {

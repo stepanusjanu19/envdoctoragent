@@ -363,6 +363,19 @@ function Invoke-Smoke {
     $installPlan = Invoke-GoOutput @("run", $Pkg, "install", "plan", "python", "--json")
     $fixPlan = Invoke-GoOutput @("run", $Pkg, "fix", "plan", "--json", $versionDir)
     $bootstrapPlan = Invoke-GoOutput @("run", $Pkg, "bootstrap", "plan", "--json", $bootstrapDir)
+    $fixApplyAudit = Join-Path $SmokeDir "fix-apply-audit.jsonl"
+    $installApplyAudit = Join-Path $SmokeDir "install-apply-audit.jsonl"
+    $versionApplyAudit = Join-Path $SmokeDir "version-apply-audit.jsonl"
+    $bootstrapApplyAudit = Join-Path $SmokeDir "bootstrap-apply-audit.jsonl"
+    $fixApply = Invoke-GoOutput @("run", $Pkg, "fix", "apply", "--dry-run", "--json", "--audit-log", $fixApplyAudit, $versionDir)
+    $installApply = Invoke-GoOutput @("run", $Pkg, "install", "apply", "python", "--dry-run", "--json", "--audit-log", $installApplyAudit)
+    $versionApply = Invoke-GoOutput @("run", $Pkg, "version", "apply", "--dry-run", "--json", "--audit-log", $versionApplyAudit, $versionDir)
+    $bootstrapApply = Invoke-GoOutput @("run", $Pkg, "bootstrap", "apply", "--dry-run", "--json", "--audit-log", $bootstrapApplyAudit, $bootstrapDir)
+    foreach ($auditPath in @($fixApplyAudit, $installApplyAudit, $versionApplyAudit, $bootstrapApplyAudit)) {
+        if (-not (Test-Path $auditPath) -or (Get-Item $auditPath).Length -eq 0) {
+            throw "Apply audit log was not created: $auditPath"
+        }
+    }
     Invoke-GoOutput @("run", $Pkg, "ui", "--script", "diagnose,version:$versionDir,fix:$versionDir,bootstrap:$bootstrapDir,exit") |
         Set-Content -Path (Join-Path $SmokeDir "ui.txt") -Encoding UTF8
     $uiOutput = Get-Content -Raw -Path (Join-Path $SmokeDir "ui.txt")
@@ -387,6 +400,10 @@ function Invoke-Smoke {
     $installPlan | ConvertFrom-Json | Out-Null
     $fixPlan | ConvertFrom-Json | Out-Null
     $bootstrapPlan | ConvertFrom-Json | Out-Null
+    $fixApply | ConvertFrom-Json | Out-Null
+    $installApply | ConvertFrom-Json | Out-Null
+    $versionApply | ConvertFrom-Json | Out-Null
+    $bootstrapApply | ConvertFrom-Json | Out-Null
 
     Invoke-GoOutput @("run", $Pkg, "dockerize", $nodeDir) |
         Set-Content -Path (Join-Path $SmokeDir "Dockerfile.preview") -Encoding UTF8

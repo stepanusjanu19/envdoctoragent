@@ -13,14 +13,20 @@ import (
 
 // Action is a plan-only bootstrap step.
 type Action struct {
-	Category      string `json:"category"`
-	Title         string `json:"title"`
-	Command       string `json:"command,omitempty"`
-	ManualSteps   string `json:"manual_steps,omitempty"`
-	Risk          string `json:"risk"`
-	RequiresAdmin bool   `json:"requires_admin"`
-	SafeToRun     bool   `json:"safe_to_run"`
-	Source        string `json:"source"`
+	ID            string   `json:"id,omitempty"`
+	Category      string   `json:"category"`
+	Title         string   `json:"title"`
+	Command       string   `json:"command,omitempty"`
+	Args          []string `json:"args,omitempty"`
+	ManualSteps   string   `json:"manual_steps,omitempty"`
+	WorkingDir    string   `json:"working_dir,omitempty"`
+	Risk          string   `json:"risk"`
+	RequiresAdmin bool     `json:"requires_admin"`
+	SafeToRun     bool     `json:"safe_to_run"`
+	Timeout       string   `json:"timeout,omitempty"`
+	RollbackHint  string   `json:"rollback_hint,omitempty"`
+	Source        string   `json:"source"`
+	Status        string   `json:"status,omitempty"`
 }
 
 // ServiceHint describes an inferred service/runtime need for bootstrap.
@@ -118,7 +124,7 @@ func buildActions(versionPlan *version.PlanReport, reports []*dependencies.Proje
 		})
 	}
 
-	return dedupeActions(actions)
+	return finalizeActions(dedupeActions(actions))
 }
 
 func dependencyAction(report *dependencies.ProjectDependencies) (Action, bool) {
@@ -331,6 +337,24 @@ func dedupeActions(actions []Action) []Action {
 		result = append(result, action)
 	}
 	return result
+}
+
+func finalizeActions(actions []Action) []Action {
+	for i := range actions {
+		if actions[i].ID == "" {
+			actions[i].ID = fmt.Sprintf("bootstrap-%03d", i+1)
+		}
+		if actions[i].Status == "" {
+			actions[i].Status = "plan-only"
+		}
+		if actions[i].Timeout == "" && actions[i].Command != "" {
+			actions[i].Timeout = "5m"
+		}
+		if actions[i].RollbackHint == "" && actions[i].Command != "" {
+			actions[i].RollbackHint = "Review project lockfiles and use version control to restore project files if needed."
+		}
+	}
+	return actions
 }
 
 func fileExists(path string) bool {

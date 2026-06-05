@@ -421,6 +421,33 @@ Set `NO_COLOR=1` to disable ANSI styling. The UI remains non-mutating and does n
 
 ---
 
+### Phase 5C — Safe Execution Preview
+
+The first execution phase is approval-gated and deterministic. Existing `plan` commands remain read-only; new `apply` commands default to dry-run and only execute allowlisted actions when `--yes` is passed.
+
+```sh
+envdoctor fix apply [directory]
+envdoctor install apply <tool>
+envdoctor version apply [directory]
+envdoctor bootstrap apply [directory]
+
+# JSON dry-run with explicit audit log
+envdoctor fix apply --dry-run --json --audit-log .cache/fix-audit.jsonl
+
+# Mutating apply requires explicit approval
+envdoctor bootstrap apply --yes <project-dir>
+```
+
+Safety behavior:
+- `--dry-run` is the default and never runs suggested commands.
+- `--yes` is required before any allowlisted command can execute.
+- Every dry-run/apply writes an audit JSONL log.
+- `--yes` creates a pre-apply snapshot under `.envdoctor/snapshots/`.
+- Shell operators and expansions such as `&&`, `;`, `|`, redirection, `$(`, and shell variables are blocked.
+- Service restart/fix, `diagnose --fix`, AI auto-fix, remote execution, and cloud mutation remain future work.
+
+---
+
 ## Project Architecture
 
 ```
@@ -443,6 +470,7 @@ envdoctor
     ├── installplan              Package manager install advisor
     ├── fixplan                  Safe fix planning
     ├── bootstrap                Project bootstrap planning
+    ├── executor                 Approval-gated dry-run/apply engine
     └── cliui                    Interactive non-mutating CLI UI
 ```
 
@@ -477,6 +505,10 @@ go run ./cmd/envdoctor version plan --json <fixture-dir>
 go run ./cmd/envdoctor install plan python --json
 go run ./cmd/envdoctor fix plan --json
 go run ./cmd/envdoctor bootstrap plan --json <fixture-dir>
+go run ./cmd/envdoctor fix apply --dry-run --json
+go run ./cmd/envdoctor install apply python --dry-run --json
+go run ./cmd/envdoctor version apply --dry-run --json <fixture-dir>
+go run ./cmd/envdoctor bootstrap apply --dry-run --json <fixture-dir>
 go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 ```
 
@@ -500,7 +532,8 @@ go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 | **Phase 4I** | ✅ UI Polish Implemented | ANSI dashboard and stable stdlib terminal UI |
 | **Phase 5** | ✅ CI Added / 🚧 IDE Planned | GitHub Actions check/smoke/release workflow; VSCode and JetBrains wrappers planned |
 | **Phase 5B** | ✅ Release Packaging Implemented | GoReleaser archives, checksums, Linux packages, and package-manager metadata |
-| **Phase 6** | 🚧 Future Mutating / AI | Approval-gated auto-fix, AI troubleshooting, multi-agent diagnostics, remote/cloud validation |
+| **Phase 5C** | ✅ Safe Execution Preview | Approval-gated `apply` commands, dry-run default, audit log, pre-apply snapshot |
+| **Phase 6** | 🚧 Future AI / Autonomous | AI troubleshooting, autonomous auto-fix, service mutation, multi-agent diagnostics, remote/cloud validation |
 
 ---
 

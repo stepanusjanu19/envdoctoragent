@@ -15,6 +15,7 @@ import (
 	"github.com/stepanusjanu19/envdoctoragent/internal/dependencies"
 	"github.com/stepanusjanu19/envdoctoragent/internal/diagnose"
 	"github.com/stepanusjanu19/envdoctoragent/internal/dockerize"
+	"github.com/stepanusjanu19/envdoctoragent/internal/executor"
 	"github.com/stepanusjanu19/envdoctoragent/internal/fixplan"
 	"github.com/stepanusjanu19/envdoctoragent/internal/installplan"
 	"github.com/stepanusjanu19/envdoctoragent/internal/recommendation"
@@ -438,12 +439,46 @@ Supports Linux, Windows, and macOS.`,
 		},
 	}
 	versionPlanCmd.Flags().BoolVar(&versionPlanJSON, "json", false, "Output in JSON format")
-	versionCmd.AddCommand(versionScanCmd, versionPlanCmd)
 
-	// install command (plan-only)
+	var versionApplyFlags executionFlags
+	var versionApplyCmd = &cobra.Command{
+		Use:   "apply [directory]",
+		Short: "Dry-run or apply allowlisted version-manager actions with approval",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			report, err := versionpkg.Plan(dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating version plan: %v\n", err)
+				os.Exit(1)
+			}
+			options, err := executionOptions(cmd, versionApplyFlags, dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error preparing version apply: %v\n", err)
+				os.Exit(1)
+			}
+			result, err := executor.Execute(executor.FromVersionPlan(report, dir), options)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error running version apply: %v\n", err)
+				os.Exit(1)
+			}
+			if versionApplyFlags.JSON {
+				printJSON(result)
+			} else {
+				printExecutionReport(result)
+			}
+		},
+	}
+	addExecutionFlags(versionApplyCmd, &versionApplyFlags)
+	versionCmd.AddCommand(versionScanCmd, versionPlanCmd, versionApplyCmd)
+
+	// install command (plan/apply)
 	var installCmd = &cobra.Command{
 		Use:   "install",
-		Short: "Generate install plans without installing tools",
+		Short: "Generate install plans or apply allowlisted installs with approval",
 	}
 	var installPlanJSON bool
 	var installPlanCmd = &cobra.Command{
@@ -460,12 +495,38 @@ Supports Linux, Windows, and macOS.`,
 		},
 	}
 	installPlanCmd.Flags().BoolVar(&installPlanJSON, "json", false, "Output in JSON format")
-	installCmd.AddCommand(installPlanCmd)
 
-	// fix command (plan-only)
+	var installApplyFlags executionFlags
+	var installApplyCmd = &cobra.Command{
+		Use:   "apply <tool>",
+		Short: "Dry-run or apply an allowlisted install plan with approval",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			plan := installplan.Generate(args[0])
+			options, err := executionOptions(cmd, installApplyFlags, ".")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error preparing install apply: %v\n", err)
+				os.Exit(1)
+			}
+			result, err := executor.Execute(executor.FromInstallPlan(plan, "."), options)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error running install apply: %v\n", err)
+				os.Exit(1)
+			}
+			if installApplyFlags.JSON {
+				printJSON(result)
+			} else {
+				printExecutionReport(result)
+			}
+		},
+	}
+	addExecutionFlags(installApplyCmd, &installApplyFlags)
+	installCmd.AddCommand(installPlanCmd, installApplyCmd)
+
+	// fix command (plan/apply)
 	var fixCmd = &cobra.Command{
 		Use:   "fix",
-		Short: "Generate safe fix plans without applying changes",
+		Short: "Generate safe fix plans or apply allowlisted fixes with approval",
 	}
 	var fixPlanJSON bool
 	var fixPlanCmd = &cobra.Command{
@@ -490,12 +551,46 @@ Supports Linux, Windows, and macOS.`,
 		},
 	}
 	fixPlanCmd.Flags().BoolVar(&fixPlanJSON, "json", false, "Output in JSON format")
-	fixCmd.AddCommand(fixPlanCmd)
 
-	// bootstrap command (plan-only)
+	var fixApplyFlags executionFlags
+	var fixApplyCmd = &cobra.Command{
+		Use:   "apply [directory]",
+		Short: "Dry-run or apply allowlisted fix actions with approval",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			report, err := fixplan.Generate(dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating fix plan: %v\n", err)
+				os.Exit(1)
+			}
+			options, err := executionOptions(cmd, fixApplyFlags, dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error preparing fix apply: %v\n", err)
+				os.Exit(1)
+			}
+			result, err := executor.Execute(executor.FromFixPlan(report, dir), options)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error running fix apply: %v\n", err)
+				os.Exit(1)
+			}
+			if fixApplyFlags.JSON {
+				printJSON(result)
+			} else {
+				printExecutionReport(result)
+			}
+		},
+	}
+	addExecutionFlags(fixApplyCmd, &fixApplyFlags)
+	fixCmd.AddCommand(fixPlanCmd, fixApplyCmd)
+
+	// bootstrap command (plan/apply)
 	var bootstrapCmd = &cobra.Command{
 		Use:   "bootstrap",
-		Short: "Generate project bootstrap plans without applying changes",
+		Short: "Generate project bootstrap plans or apply allowlisted setup actions with approval",
 	}
 	var bootstrapPlanJSON bool
 	var bootstrapPlanCmd = &cobra.Command{
@@ -520,7 +615,41 @@ Supports Linux, Windows, and macOS.`,
 		},
 	}
 	bootstrapPlanCmd.Flags().BoolVar(&bootstrapPlanJSON, "json", false, "Output in JSON format")
-	bootstrapCmd.AddCommand(bootstrapPlanCmd)
+
+	var bootstrapApplyFlags executionFlags
+	var bootstrapApplyCmd = &cobra.Command{
+		Use:   "apply [directory]",
+		Short: "Dry-run or apply allowlisted bootstrap actions with approval",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			plan, err := bootstrap.GeneratePlan(dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating bootstrap plan: %v\n", err)
+				os.Exit(1)
+			}
+			options, err := executionOptions(cmd, bootstrapApplyFlags, dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error preparing bootstrap apply: %v\n", err)
+				os.Exit(1)
+			}
+			result, err := executor.Execute(executor.FromBootstrapPlan(plan, dir), options)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error running bootstrap apply: %v\n", err)
+				os.Exit(1)
+			}
+			if bootstrapApplyFlags.JSON {
+				printJSON(result)
+			} else {
+				printExecutionReport(result)
+			}
+		},
+	}
+	addExecutionFlags(bootstrapApplyCmd, &bootstrapApplyFlags)
+	bootstrapCmd.AddCommand(bootstrapPlanCmd, bootstrapApplyCmd)
 
 	// ui command (interactive, non-mutating)
 	var uiScript string
@@ -556,6 +685,81 @@ func printJSON(value interface{}) {
 		os.Exit(1)
 	}
 	fmt.Println(string(data))
+}
+
+type executionFlags struct {
+	DryRun   bool
+	Yes      bool
+	JSON     bool
+	AuditLog string
+	Timeout  string
+}
+
+func addExecutionFlags(command *cobra.Command, flags *executionFlags) {
+	command.Flags().BoolVar(&flags.DryRun, "dry-run", true, "Preview actions without executing them")
+	command.Flags().BoolVar(&flags.Yes, "yes", false, "Approve execution of allowlisted actions")
+	command.Flags().BoolVar(&flags.JSON, "json", false, "Output in JSON format")
+	command.Flags().StringVar(&flags.AuditLog, "audit-log", "", "Write audit JSONL to the specified file")
+	command.Flags().StringVar(&flags.Timeout, "timeout", executor.DefaultTimeout.String(), "Per-action timeout, for example 30s or 2m")
+}
+
+func executionOptions(command *cobra.Command, flags executionFlags, baseDir string) (executor.Options, error) {
+	dryRun := true
+	if flags.Yes {
+		dryRun = false
+	}
+	if command.Flags().Changed("dry-run") {
+		dryRun = flags.DryRun
+	}
+	if !flags.Yes && command.Flags().Changed("dry-run") && !flags.DryRun {
+		return executor.Options{}, fmt.Errorf("mutating apply requires --yes; omit --dry-run=false or pass --yes")
+	}
+
+	timeout, err := time.ParseDuration(flags.Timeout)
+	if err != nil {
+		return executor.Options{}, fmt.Errorf("invalid --timeout value %q: %w", flags.Timeout, err)
+	}
+	if timeout <= 0 {
+		return executor.Options{}, fmt.Errorf("--timeout must be positive")
+	}
+
+	return executor.Options{
+		DryRun:   dryRun,
+		Approved: flags.Yes,
+		BaseDir:  baseDir,
+		AuditLog: flags.AuditLog,
+		Timeout:  timeout,
+	}, nil
+}
+
+func printExecutionReport(report *executor.Report) {
+	fmt.Println(report.Summary)
+	fmt.Printf("Mode: %s\n", report.Mode)
+	fmt.Printf("Audit log: %s\n", report.AuditLog)
+	if report.SnapshotFile != "" {
+		fmt.Printf("Pre-apply snapshot: %s\n", report.SnapshotFile)
+	}
+	if len(report.Results) == 0 {
+		fmt.Println("No executable actions were generated.")
+		return
+	}
+	for _, result := range report.Results {
+		fmt.Printf("- [%s] %s\n", result.Status, result.Action.Title)
+		if result.Action.SuggestedCommand != "" {
+			fmt.Printf("  Suggested command: %s\n", result.Action.SuggestedCommand)
+		} else if result.Action.Command != "" {
+			fmt.Printf("  Command: %s\n", strings.Join(append([]string{result.Action.Command}, result.Action.Args...), " "))
+		}
+		if result.Error != "" {
+			fmt.Printf("  Error: %s\n", result.Error)
+		}
+		if result.Message != "" {
+			fmt.Printf("  Message: %s\n", result.Message)
+		}
+		if result.Action.RollbackHint != "" {
+			fmt.Printf("  Rollback hint: %s\n", result.Action.RollbackHint)
+		}
+	}
 }
 
 func printServiceList(report *service.ListReport) {

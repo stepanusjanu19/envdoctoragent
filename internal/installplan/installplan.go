@@ -9,16 +9,22 @@ import (
 
 // Action is a non-mutating install command suggestion.
 type Action struct {
-	Tool          string `json:"tool"`
-	Platform      string `json:"platform"`
-	Manager       string `json:"manager"`
-	Package       string `json:"package"`
-	Command       string `json:"command,omitempty"`
-	ManualSteps   string `json:"manual_steps,omitempty"`
-	Risk          string `json:"risk"`
-	RequiresAdmin bool   `json:"requires_admin"`
-	SafeToRun     bool   `json:"safe_to_run"`
-	Status        string `json:"status"`
+	ID            string   `json:"id,omitempty"`
+	Tool          string   `json:"tool"`
+	Platform      string   `json:"platform"`
+	Manager       string   `json:"manager"`
+	Package       string   `json:"package"`
+	Command       string   `json:"command,omitempty"`
+	Args          []string `json:"args,omitempty"`
+	ManualSteps   string   `json:"manual_steps,omitempty"`
+	WorkingDir    string   `json:"working_dir,omitempty"`
+	Risk          string   `json:"risk"`
+	RequiresAdmin bool     `json:"requires_admin"`
+	SafeToRun     bool     `json:"safe_to_run"`
+	Timeout       string   `json:"timeout,omitempty"`
+	RollbackHint  string   `json:"rollback_hint,omitempty"`
+	Source        string   `json:"source,omitempty"`
+	Status        string   `json:"status"`
 }
 
 // Plan is the install advisor output.
@@ -46,11 +52,15 @@ var linuxManagers = []managerDef{
 func Generate(tool string) *Plan {
 	tool = normalizeTool(tool)
 	action := Action{
+		ID:            fmt.Sprintf("install-%s", tool),
 		Tool:          tool,
 		Platform:      runtime.GOOS,
 		Risk:          "medium",
 		RequiresAdmin: true,
 		SafeToRun:     false,
+		Timeout:       "10m",
+		RollbackHint:  "Use the same package manager to uninstall the package if the install is not desired.",
+		Source:        "installplan",
 		Status:        "plan-only",
 	}
 

@@ -15,6 +15,7 @@
 /bin/
 /dist/
 /.cache/
+/.envdoctor/
 Dockerfile.generated*
 
 # Code coverage profiles and other test artifacts
