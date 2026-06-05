@@ -5,17 +5,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"envdoctor/internal/analyzer"
+	"envdoctor/internal/bootstrap"
+	"envdoctor/internal/cliui"
 	"envdoctor/internal/container"
 	"envdoctor/internal/dependencies"
 	"envdoctor/internal/diagnose"
 	"envdoctor/internal/dockerize"
+	"envdoctor/internal/fixplan"
+	"envdoctor/internal/installplan"
 	"envdoctor/internal/recommendation"
 	"envdoctor/internal/scanner"
+	"envdoctor/internal/service"
 	"envdoctor/internal/snapshot"
 	"envdoctor/internal/system"
+	"envdoctor/internal/version"
 
 	"github.com/spf13/cobra"
 )
@@ -29,6 +36,7 @@ Supports Linux, Windows, and macOS.`,
 	}
 
 	// system command
+	var systemJSON bool
 	var systemCmd = &cobra.Command{
 		Use:   "system",
 		Short: "Display system information",
@@ -38,9 +46,14 @@ Supports Linux, Windows, and macOS.`,
 				fmt.Fprintf(os.Stderr, "Error detecting system: %v\n", err)
 				os.Exit(1)
 			}
-			system.Print(info)
+			if systemJSON {
+				printJSON(info)
+			} else {
+				system.Print(info)
+			}
 		},
 	}
+	systemCmd.Flags().BoolVar(&systemJSON, "json", false, "Output in JSON format")
 
 	// scan command
 	var scanCmd = &cobra.Command{
@@ -49,6 +62,7 @@ Supports Linux, Windows, and macOS.`,
 	}
 
 	// scan toolchain
+	var scanToolchainJSON bool
 	var scanToolchainCmd = &cobra.Command{
 		Use:   "toolchain",
 		Short: "Detect installed development tools",
@@ -58,11 +72,17 @@ Supports Linux, Windows, and macOS.`,
 				fmt.Fprintf(os.Stderr, "Error scanning toolchain: %v\n", err)
 				os.Exit(1)
 			}
-			scanner.PrintToolchain(tools)
+			if scanToolchainJSON {
+				printJSON(tools)
+			} else {
+				scanner.PrintToolchain(tools)
+			}
 		},
 	}
+	scanToolchainCmd.Flags().BoolVar(&scanToolchainJSON, "json", false, "Output in JSON format")
 
 	// scan path
+	var scanPathJSON bool
 	var scanPathCmd = &cobra.Command{
 		Use:   "path",
 		Short: "Analyze PATH environment variable",
@@ -72,11 +92,17 @@ Supports Linux, Windows, and macOS.`,
 				fmt.Fprintf(os.Stderr, "Error scanning PATH: %v\n", err)
 				os.Exit(1)
 			}
-			scanner.PrintPathReport(report)
+			if scanPathJSON {
+				printJSON(report)
+			} else {
+				scanner.PrintPathReport(report)
+			}
 		},
 	}
+	scanPathCmd.Flags().BoolVar(&scanPathJSON, "json", false, "Output in JSON format")
 
 	// scan container
+	var scanContainerJSON bool
 	var scanContainerCmd = &cobra.Command{
 		Use:   "container",
 		Short: "Validate container environments",
@@ -86,11 +112,17 @@ Supports Linux, Windows, and macOS.`,
 				fmt.Fprintf(os.Stderr, "Error checking container environments: %v\n", err)
 				os.Exit(1)
 			}
-			container.PrintContainerInfo(info)
+			if scanContainerJSON {
+				printJSON(info)
+			} else {
+				container.PrintContainerInfo(info)
+			}
 		},
 	}
+	scanContainerCmd.Flags().BoolVar(&scanContainerJSON, "json", false, "Output in JSON format")
 
 	// scan dependencies
+	var scanDependenciesJSON bool
 	var scanDependenciesCmd = &cobra.Command{
 		Use:   "dependencies [directory]",
 		Short: "Analyze project dependencies",
@@ -105,9 +137,14 @@ Supports Linux, Windows, and macOS.`,
 				fmt.Fprintf(os.Stderr, "Error analyzing dependencies: %v\n", err)
 				os.Exit(1)
 			}
-			dependencies.PrintAllDependencies(deps)
+			if scanDependenciesJSON {
+				printJSON(deps)
+			} else {
+				dependencies.PrintAllDependencies(deps)
+			}
 		},
 	}
+	scanDependenciesCmd.Flags().BoolVar(&scanDependenciesJSON, "json", false, "Output in JSON format")
 
 	// diagnose command
 	var diagnoseCmd = &cobra.Command{
@@ -195,6 +232,7 @@ Supports Linux, Windows, and macOS.`,
 	dockerizeCmd.Flags().Bool("force", false, "Overwrite an existing Dockerfile or output file")
 
 	// snapshot command
+	var snapshotJSON bool
 	var snapshotCmd = &cobra.Command{
 		Use:   "snapshot",
 		Short: "Create environment snapshot",
@@ -219,6 +257,8 @@ Supports Linux, Windows, and macOS.`,
 					os.Exit(1)
 				}
 				fmt.Printf("Snapshot saved to %s\n", filename)
+			} else if snapshotJSON {
+				printJSON(snap)
 			} else {
 				snapshot.PrintSnapshot(snap)
 			}
@@ -226,6 +266,7 @@ Supports Linux, Windows, and macOS.`,
 	}
 	snapshotCmd.Flags().Bool("save", false, "Save the snapshot to a file")
 	snapshotCmd.Flags().String("output", "", "Write the snapshot to the specified file")
+	snapshotCmd.Flags().BoolVar(&snapshotJSON, "json", false, "Output in JSON format")
 
 	// compare command
 	var compareCmd = &cobra.Command{
@@ -273,7 +314,233 @@ Supports Linux, Windows, and macOS.`,
 	}
 	recommendCmd.Flags().BoolVar(&recommendJSON, "json", false, "Output in JSON format")
 
-	rootCmd.AddCommand(systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd)
+	// service command (read-only)
+	var serviceCmd = &cobra.Command{
+		Use:   "service",
+		Short: "Inspect OS services without changing them",
+	}
+	var serviceListJSON bool
+	var serviceListCmd = &cobra.Command{
+		Use:   "list",
+		Short: "List services using the native service manager",
+		Run: func(cmd *cobra.Command, args []string) {
+			report, err := service.ListServices()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error listing services: %v\n", err)
+				os.Exit(1)
+			}
+			if serviceListJSON {
+				printJSON(report)
+			} else {
+				printServiceList(report)
+			}
+		},
+	}
+	serviceListCmd.Flags().BoolVar(&serviceListJSON, "json", false, "Output in JSON format")
+
+	var serviceStatusJSON bool
+	var serviceStatusCmd = &cobra.Command{
+		Use:   "status <name>",
+		Short: "Show read-only status for one service",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			info, err := service.Status(args[0])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error checking service: %v\n", err)
+				os.Exit(1)
+			}
+			if serviceStatusJSON {
+				printJSON(info)
+			} else {
+				printServiceInfo(info)
+			}
+		},
+	}
+	serviceStatusCmd.Flags().BoolVar(&serviceStatusJSON, "json", false, "Output in JSON format")
+
+	var serviceDiagnoseJSON bool
+	var serviceDiagnoseCmd = &cobra.Command{
+		Use:   "diagnose <name>",
+		Short: "Diagnose one service without restart or fix actions",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			report, err := service.Diagnose(args[0])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error diagnosing service: %v\n", err)
+				os.Exit(1)
+			}
+			if serviceDiagnoseJSON {
+				printJSON(report)
+			} else {
+				printServiceInfo(&report.Service)
+				if len(report.Recommendations) > 0 {
+					fmt.Println("Recommendations:")
+					for _, rec := range report.Recommendations {
+						fmt.Printf("  - %s\n", rec)
+					}
+				}
+			}
+		},
+	}
+	serviceDiagnoseCmd.Flags().BoolVar(&serviceDiagnoseJSON, "json", false, "Output in JSON format")
+	serviceCmd.AddCommand(serviceListCmd, serviceStatusCmd, serviceDiagnoseCmd)
+
+	// version command (read-only / plan-only)
+	var versionCmd = &cobra.Command{
+		Use:   "version",
+		Short: "Inspect version managers and project runtime requirements",
+	}
+	var versionScanJSON bool
+	var versionScanCmd = &cobra.Command{
+		Use:   "scan [directory]",
+		Short: "Scan version managers, runtimes, and project requirements",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			report, err := version.Scan(dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error scanning versions: %v\n", err)
+				os.Exit(1)
+			}
+			if versionScanJSON {
+				printJSON(report)
+			} else {
+				printVersionScan(report)
+			}
+		},
+	}
+	versionScanCmd.Flags().BoolVar(&versionScanJSON, "json", false, "Output in JSON format")
+
+	var versionPlanJSON bool
+	var versionPlanCmd = &cobra.Command{
+		Use:   "plan [directory]",
+		Short: "Generate version manager install/switch suggestions",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			report, err := version.Plan(dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating version plan: %v\n", err)
+				os.Exit(1)
+			}
+			if versionPlanJSON {
+				printJSON(report)
+			} else {
+				printVersionPlan(report)
+			}
+		},
+	}
+	versionPlanCmd.Flags().BoolVar(&versionPlanJSON, "json", false, "Output in JSON format")
+	versionCmd.AddCommand(versionScanCmd, versionPlanCmd)
+
+	// install command (plan-only)
+	var installCmd = &cobra.Command{
+		Use:   "install",
+		Short: "Generate install plans without installing tools",
+	}
+	var installPlanJSON bool
+	var installPlanCmd = &cobra.Command{
+		Use:   "plan <tool>",
+		Short: "Suggest a platform package-manager install command",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			plan := installplan.Generate(args[0])
+			if installPlanJSON {
+				printJSON(plan)
+			} else {
+				printInstallPlan(plan)
+			}
+		},
+	}
+	installPlanCmd.Flags().BoolVar(&installPlanJSON, "json", false, "Output in JSON format")
+	installCmd.AddCommand(installPlanCmd)
+
+	// fix command (plan-only)
+	var fixCmd = &cobra.Command{
+		Use:   "fix",
+		Short: "Generate safe fix plans without applying changes",
+	}
+	var fixPlanJSON bool
+	var fixPlanCmd = &cobra.Command{
+		Use:   "plan [directory]",
+		Short: "Combine environment findings into a non-mutating fix plan",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			report, err := fixplan.Generate(dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating fix plan: %v\n", err)
+				os.Exit(1)
+			}
+			if fixPlanJSON {
+				printJSON(report)
+			} else {
+				printFixPlan(report)
+			}
+		},
+	}
+	fixPlanCmd.Flags().BoolVar(&fixPlanJSON, "json", false, "Output in JSON format")
+	fixCmd.AddCommand(fixPlanCmd)
+
+	// bootstrap command (plan-only)
+	var bootstrapCmd = &cobra.Command{
+		Use:   "bootstrap",
+		Short: "Generate project bootstrap plans without applying changes",
+	}
+	var bootstrapPlanJSON bool
+	var bootstrapPlanCmd = &cobra.Command{
+		Use:   "plan [directory]",
+		Short: "Plan runtime, dependency, and service setup for a project",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			plan, err := bootstrap.GeneratePlan(dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating bootstrap plan: %v\n", err)
+				os.Exit(1)
+			}
+			if bootstrapPlanJSON {
+				printJSON(plan)
+			} else {
+				printBootstrapPlan(plan)
+			}
+		},
+	}
+	bootstrapPlanCmd.Flags().BoolVar(&bootstrapPlanJSON, "json", false, "Output in JSON format")
+	bootstrapCmd.AddCommand(bootstrapPlanCmd)
+
+	// ui command (interactive, non-mutating)
+	var uiScript string
+	var uiCmd = &cobra.Command{
+		Use:   "ui",
+		Short: "Start an interactive CLI UI for read-only and plan-only workflows",
+		Run: func(cmd *cobra.Command, args []string) {
+			err := cliui.Run(cliui.Options{
+				In:     os.Stdin,
+				Out:    os.Stdout,
+				Script: uiScript,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error running UI: %v\n", err)
+				os.Exit(1)
+			}
+		},
+	}
+	uiCmd.Flags().StringVar(&uiScript, "script", "", "Run comma-separated UI actions for smoke checks, e.g. diagnose,fix,exit")
+
+	rootCmd.AddCommand(systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd, serviceCmd, versionCmd, installCmd, fixCmd, bootstrapCmd, uiCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -288,4 +555,132 @@ func printJSON(value interface{}) {
 		os.Exit(1)
 	}
 	fmt.Println(string(data))
+}
+
+func printServiceList(report *service.ListReport) {
+	fmt.Printf("Service manager: %s (%s)\n", report.Manager, report.Status)
+	if report.Message != "" {
+		fmt.Println(report.Message)
+	}
+	if len(report.Services) == 0 {
+		return
+	}
+	fmt.Printf("%-48s %-14s %s\n", "Service", "State", "Description")
+	for _, svc := range report.Services {
+		fmt.Printf("%-48s %-14s %s\n", svc.Name, valueOrDash(svc.State), svc.Description)
+	}
+}
+
+func printServiceInfo(info *service.ServiceInfo) {
+	fmt.Printf("Service: %s\n", info.Name)
+	fmt.Printf("Manager: %s\n", info.Manager)
+	fmt.Printf("Platform: %s\n", info.Platform)
+	fmt.Printf("Status: %s\n", info.Status)
+	if info.State != "" {
+		fmt.Printf("State: %s\n", info.State)
+	}
+	if info.Description != "" {
+		fmt.Printf("Description: %s\n", info.Description)
+	}
+	if info.Recommendation != "" {
+		fmt.Printf("Recommendation: %s\n", info.Recommendation)
+	}
+}
+
+func printVersionScan(report *version.ScanReport) {
+	fmt.Println(report.Summary)
+	fmt.Println()
+	fmt.Println("Version managers:")
+	for _, manager := range report.Managers {
+		fmt.Printf("  %-8s found=%t version=%s source=%s\n", manager.Name, manager.Found, valueOrDash(manager.Version), valueOrDash(manager.Source))
+	}
+	fmt.Println()
+	fmt.Println("Runtimes:")
+	for _, runtimeInfo := range report.Runtimes {
+		fmt.Printf("  %-8s found=%t version=%s manager=%s\n", runtimeInfo.Name, runtimeInfo.Found, valueOrDash(runtimeInfo.Version), valueOrDash(runtimeInfo.Manager))
+	}
+	if len(report.Requirements) > 0 {
+		fmt.Println()
+		fmt.Println("Project requirements:")
+		for _, req := range report.Requirements {
+			fmt.Printf("  %s %s from %s\n", req.Runtime, req.Version, req.SourceFile)
+		}
+	}
+	if len(report.Mismatches) > 0 {
+		fmt.Println()
+		fmt.Println("Items needing review:")
+		for _, mismatch := range report.Mismatches {
+			fmt.Printf("  [%s] %s required=%s active=%s source=%s\n", mismatch.Status, mismatch.Runtime, mismatch.Required, valueOrDash(mismatch.Active), mismatch.SourceFile)
+		}
+	}
+}
+
+func printVersionPlan(report *version.PlanReport) {
+	fmt.Println(report.Summary)
+	for _, action := range report.Actions {
+		fmt.Printf("- %s\n", action.Title)
+		if action.Command != "" {
+			fmt.Printf("  Suggested command: %s\n", action.Command)
+		}
+		if action.ManualSteps != "" {
+			fmt.Printf("  Manual steps: %s\n", action.ManualSteps)
+		}
+	}
+}
+
+func printInstallPlan(plan *installplan.Plan) {
+	fmt.Println(plan.Summary)
+	action := plan.Action
+	fmt.Printf("Tool: %s\n", action.Tool)
+	fmt.Printf("Manager: %s\n", valueOrDash(action.Manager))
+	fmt.Printf("Risk: %s | Requires admin: %t | Safe to run: %t\n", action.Risk, action.RequiresAdmin, action.SafeToRun)
+	if action.Command != "" {
+		fmt.Printf("Suggested command: %s\n", action.Command)
+	}
+	if action.ManualSteps != "" {
+		fmt.Printf("Manual steps: %s\n", action.ManualSteps)
+	}
+}
+
+func printFixPlan(report *fixplan.Report) {
+	fmt.Println(report.Summary)
+	for _, action := range report.Actions {
+		fmt.Printf("- [%s] %s\n", action.Category, action.Title)
+		if action.Command != "" {
+			fmt.Printf("  Suggested command: %s\n", action.Command)
+		}
+		if action.ManualSteps != "" {
+			fmt.Printf("  Manual steps: %s\n", action.ManualSteps)
+		}
+	}
+}
+
+func printBootstrapPlan(plan *bootstrap.Plan) {
+	fmt.Println(plan.Summary)
+	if len(plan.ServiceHints) > 0 {
+		fmt.Println("Service hints:")
+		for _, hint := range plan.ServiceHints {
+			fmt.Printf("  - %s from %s\n", hint.Name, hint.SourceFile)
+		}
+	}
+	if len(plan.Actions) > 0 {
+		fmt.Println("Actions:")
+		for _, action := range plan.Actions {
+			fmt.Printf("  - [%s] %s\n", action.Category, action.Title)
+			if action.Command != "" {
+				fmt.Printf("    Suggested command: %s\n", action.Command)
+			}
+			if action.ManualSteps != "" {
+				fmt.Printf("    Manual steps: %s\n", action.ManualSteps)
+			}
+		}
+	}
+}
+
+func valueOrDash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return value
 }
