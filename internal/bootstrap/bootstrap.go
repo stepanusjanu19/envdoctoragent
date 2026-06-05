@@ -13,20 +13,26 @@ import (
 
 // Action is a plan-only bootstrap step.
 type Action struct {
-	ID            string   `json:"id,omitempty"`
-	Category      string   `json:"category"`
-	Title         string   `json:"title"`
-	Command       string   `json:"command,omitempty"`
-	Args          []string `json:"args,omitempty"`
-	ManualSteps   string   `json:"manual_steps,omitempty"`
-	WorkingDir    string   `json:"working_dir,omitempty"`
-	Risk          string   `json:"risk"`
-	RequiresAdmin bool     `json:"requires_admin"`
-	SafeToRun     bool     `json:"safe_to_run"`
-	Timeout       string   `json:"timeout,omitempty"`
-	RollbackHint  string   `json:"rollback_hint,omitempty"`
-	Source        string   `json:"source"`
-	Status        string   `json:"status,omitempty"`
+	ID             string   `json:"id,omitempty"`
+	Category       string   `json:"category"`
+	Operation      string   `json:"operation,omitempty"`
+	Ecosystem      string   `json:"ecosystem,omitempty"`
+	PackageManager string   `json:"package_manager,omitempty"`
+	Packages       []string `json:"packages,omitempty"`
+	Title          string   `json:"title"`
+	Command        string   `json:"command,omitempty"`
+	Args           []string `json:"args,omitempty"`
+	ManualSteps    string   `json:"manual_steps,omitempty"`
+	WorkingDir     string   `json:"working_dir,omitempty"`
+	Risk           string   `json:"risk"`
+	RequiresAdmin  bool     `json:"requires_admin"`
+	SafeToRun      bool     `json:"safe_to_run"`
+	MutatesProject bool     `json:"mutates_project,omitempty"`
+	CreatesProject bool     `json:"creates_project,omitempty"`
+	Timeout        string   `json:"timeout,omitempty"`
+	RollbackHint   string   `json:"rollback_hint,omitempty"`
+	Source         string   `json:"source"`
+	Status         string   `json:"status,omitempty"`
 }
 
 // ServiceHint describes an inferred service/runtime need for bootstrap.

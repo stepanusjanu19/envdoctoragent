@@ -66,21 +66,27 @@ type ScanReport struct {
 
 // PlanAction is a non-mutating version manager suggestion.
 type PlanAction struct {
-	ID            string   `json:"id,omitempty"`
-	Runtime       string   `json:"runtime"`
-	Title         string   `json:"title"`
-	Command       string   `json:"command,omitempty"`
-	Args          []string `json:"args,omitempty"`
-	ManualSteps   string   `json:"manual_steps,omitempty"`
-	WorkingDir    string   `json:"working_dir,omitempty"`
-	Risk          string   `json:"risk"`
-	RequiresAdmin bool     `json:"requires_admin"`
-	Platform      string   `json:"platform"`
-	Manager       string   `json:"manager,omitempty"`
-	SafeToRun     bool     `json:"safe_to_run"`
-	Timeout       string   `json:"timeout,omitempty"`
-	RollbackHint  string   `json:"rollback_hint,omitempty"`
-	Source        string   `json:"source,omitempty"`
+	ID             string   `json:"id,omitempty"`
+	Runtime        string   `json:"runtime"`
+	Operation      string   `json:"operation,omitempty"`
+	Ecosystem      string   `json:"ecosystem,omitempty"`
+	PackageManager string   `json:"package_manager,omitempty"`
+	Packages       []string `json:"packages,omitempty"`
+	Title          string   `json:"title"`
+	Command        string   `json:"command,omitempty"`
+	Args           []string `json:"args,omitempty"`
+	ManualSteps    string   `json:"manual_steps,omitempty"`
+	WorkingDir     string   `json:"working_dir,omitempty"`
+	Risk           string   `json:"risk"`
+	RequiresAdmin  bool     `json:"requires_admin"`
+	Platform       string   `json:"platform"`
+	Manager        string   `json:"manager,omitempty"`
+	SafeToRun      bool     `json:"safe_to_run"`
+	MutatesProject bool     `json:"mutates_project,omitempty"`
+	CreatesProject bool     `json:"creates_project,omitempty"`
+	Timeout        string   `json:"timeout,omitempty"`
+	RollbackHint   string   `json:"rollback_hint,omitempty"`
+	Source         string   `json:"source,omitempty"`
 }
 
 // PlanReport contains version scan data and suggested actions.

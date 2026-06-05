@@ -448,6 +448,47 @@ Safety behavior:
 
 ---
 
+### Phase 5D — Project Lifecycle & Dependency Operations
+
+Envdoctor can now plan and dry-run project initialization plus dependency lifecycle operations for new and existing projects. This layer uses the Phase 5C executor: dry-run is still the default, `--yes` is required for mutation, and every apply writes an audit log.
+
+```sh
+envdoctor project scan [directory]
+
+envdoctor project init plan <template> [directory]
+envdoctor project init apply <template> [directory] --dry-run
+
+envdoctor project deps plan <sync|install|update|remove> [package] [directory]
+envdoctor project deps apply <sync|install|update|remove> [package] [directory] --dry-run
+```
+
+Useful flags:
+
+```sh
+--json
+--audit-log <file>
+--timeout 2m
+--ecosystem node
+--manager pnpm
+--dev
+--version 1.2.3
+--all
+--allow-non-empty
+```
+
+Supported init templates include `node`, `react-vite`, `next`, `vue-vite`, `sveltekit`, `express`, `nestjs`, `python`, `go`, `rust`, `php`, `java-maven`, `java-gradle`, `dotnet`, `dart`, `flutter`, `swift`, and `elixir`.
+
+Dependency operations cover Node.js package managers, Python pip, Go modules, Cargo, Composer, Maven/Gradle sync, .NET packages, Dart pub, Bundler, SwiftPM sync, and Mix sync. Ecosystems without a safe command mapping return manual or metadata-only actions instead of executing arbitrary shell commands.
+
+Safety behavior:
+- `project init apply` is blocked for non-empty directories unless `--allow-non-empty` is passed.
+- `project deps remove` requires an explicit package name.
+- Project actions use structured `command` + `args`; shell strings are not generated for new lifecycle actions.
+- `--yes` creates a project snapshot under `.envdoctor/project-snapshots/` before running allowlisted commands.
+- Project snapshots include manifest and lockfile checksums plus copies of known config files.
+
+---
+
 ## Project Architecture
 
 ```
@@ -471,6 +512,7 @@ envdoctor
     ├── fixplan                  Safe fix planning
     ├── bootstrap                Project bootstrap planning
     ├── executor                 Approval-gated dry-run/apply engine
+    ├── projectops               Project init and dependency lifecycle operations
     └── cliui                    Interactive non-mutating CLI UI
 ```
 
@@ -509,6 +551,12 @@ go run ./cmd/envdoctor fix apply --dry-run --json
 go run ./cmd/envdoctor install apply python --dry-run --json
 go run ./cmd/envdoctor version apply --dry-run --json <fixture-dir>
 go run ./cmd/envdoctor bootstrap apply --dry-run --json <fixture-dir>
+go run ./cmd/envdoctor project scan --json <fixture-dir>
+go run ./cmd/envdoctor project init plan node --json <empty-dir>
+go run ./cmd/envdoctor project init apply go --dry-run --json <empty-dir>
+go run ./cmd/envdoctor project deps plan sync --json <fixture-dir>
+go run ./cmd/envdoctor project deps plan install lodash --ecosystem node --json <fixture-dir>
+go run ./cmd/envdoctor project deps apply sync --dry-run --json <fixture-dir>
 go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 ```
 
@@ -533,6 +581,7 @@ go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 | **Phase 5** | ✅ CI Added / 🚧 IDE Planned | GitHub Actions check/smoke/release workflow; VSCode and JetBrains wrappers planned |
 | **Phase 5B** | ✅ Release Packaging Implemented | GoReleaser archives, checksums, Linux packages, and package-manager metadata |
 | **Phase 5C** | ✅ Safe Execution Preview | Approval-gated `apply` commands, dry-run default, audit log, pre-apply snapshot |
+| **Phase 5D** | ✅ Project Lifecycle Preview | Project scan/init/deps plan and approval-gated dependency operations |
 | **Phase 6** | 🚧 Future AI / Autonomous | AI troubleshooting, autonomous auto-fix, service mutation, multi-agent diagnostics, remote/cloud validation |
 
 ---

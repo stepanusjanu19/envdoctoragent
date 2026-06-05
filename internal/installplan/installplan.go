@@ -9,22 +9,28 @@ import (
 
 // Action is a non-mutating install command suggestion.
 type Action struct {
-	ID            string   `json:"id,omitempty"`
-	Tool          string   `json:"tool"`
-	Platform      string   `json:"platform"`
-	Manager       string   `json:"manager"`
-	Package       string   `json:"package"`
-	Command       string   `json:"command,omitempty"`
-	Args          []string `json:"args,omitempty"`
-	ManualSteps   string   `json:"manual_steps,omitempty"`
-	WorkingDir    string   `json:"working_dir,omitempty"`
-	Risk          string   `json:"risk"`
-	RequiresAdmin bool     `json:"requires_admin"`
-	SafeToRun     bool     `json:"safe_to_run"`
-	Timeout       string   `json:"timeout,omitempty"`
-	RollbackHint  string   `json:"rollback_hint,omitempty"`
-	Source        string   `json:"source,omitempty"`
-	Status        string   `json:"status"`
+	ID             string   `json:"id,omitempty"`
+	Tool           string   `json:"tool"`
+	Platform       string   `json:"platform"`
+	Manager        string   `json:"manager"`
+	Package        string   `json:"package"`
+	Operation      string   `json:"operation,omitempty"`
+	Ecosystem      string   `json:"ecosystem,omitempty"`
+	PackageManager string   `json:"package_manager,omitempty"`
+	Packages       []string `json:"packages,omitempty"`
+	Command        string   `json:"command,omitempty"`
+	Args           []string `json:"args,omitempty"`
+	ManualSteps    string   `json:"manual_steps,omitempty"`
+	WorkingDir     string   `json:"working_dir,omitempty"`
+	Risk           string   `json:"risk"`
+	RequiresAdmin  bool     `json:"requires_admin"`
+	SafeToRun      bool     `json:"safe_to_run"`
+	MutatesProject bool     `json:"mutates_project,omitempty"`
+	CreatesProject bool     `json:"creates_project,omitempty"`
+	Timeout        string   `json:"timeout,omitempty"`
+	RollbackHint   string   `json:"rollback_hint,omitempty"`
+	Source         string   `json:"source,omitempty"`
+	Status         string   `json:"status"`
 }
 
 // Plan is the install advisor output.

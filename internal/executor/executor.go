@@ -3,12 +3,16 @@ package executor
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +33,10 @@ type Action struct {
 	ID               string   `json:"id"`
 	Source           string   `json:"source"`
 	Category         string   `json:"category"`
+	Operation        string   `json:"operation,omitempty"`
+	Ecosystem        string   `json:"ecosystem,omitempty"`
+	PackageManager   string   `json:"package_manager,omitempty"`
+	Packages         []string `json:"packages,omitempty"`
 	Title            string   `json:"title"`
 	Description      string   `json:"description,omitempty"`
 	Command          string   `json:"command,omitempty"`
@@ -39,6 +47,8 @@ type Action struct {
 	Risk             string   `json:"risk"`
 	RequiresAdmin    bool     `json:"requires_admin"`
 	SafeToRun        bool     `json:"safe_to_run"`
+	MutatesProject   bool     `json:"mutates_project,omitempty"`
+	CreatesProject   bool     `json:"creates_project,omitempty"`
 	Timeout          string   `json:"timeout"`
 	RollbackHint     string   `json:"rollback_hint,omitempty"`
 	Status           string   `json:"status"`
@@ -68,15 +78,17 @@ type Result struct {
 
 // Report is the JSON/text output for apply commands.
 type Report struct {
-	Mode         string    `json:"mode"`
-	Platform     string    `json:"platform"`
-	WorkingDir   string    `json:"working_dir"`
-	AuditLog     string    `json:"audit_log"`
-	SnapshotFile string    `json:"snapshot_file,omitempty"`
-	Results      []Result  `json:"results"`
-	Summary      string    `json:"summary"`
-	StartedAt    time.Time `json:"started_at"`
-	FinishedAt   time.Time `json:"finished_at"`
+	Mode                string    `json:"mode"`
+	Platform            string    `json:"platform"`
+	WorkingDir          string    `json:"working_dir"`
+	AuditLog            string    `json:"audit_log"`
+	SnapshotFile        string    `json:"snapshot_file,omitempty"`
+	ProjectSnapshotFile string    `json:"project_snapshot_file,omitempty"`
+	ProjectChanges      []string  `json:"project_changes,omitempty"`
+	Results             []Result  `json:"results"`
+	Summary             string    `json:"summary"`
+	StartedAt           time.Time `json:"started_at"`
+	FinishedAt          time.Time `json:"finished_at"`
 }
 
 type auditRecord struct {
@@ -86,6 +98,36 @@ type auditRecord struct {
 	ActionID  string    `json:"action_id,omitempty"`
 	Result    *Result   `json:"result,omitempty"`
 	Message   string    `json:"message,omitempty"`
+}
+
+type projectFileInfo struct {
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	SHA256  string `json:"sha256"`
+	ModTime string `json:"mod_time"`
+}
+
+type projectSnapshotManifest struct {
+	Timestamp time.Time         `json:"timestamp"`
+	Root      string            `json:"root"`
+	Files     []projectFileInfo `json:"files"`
+}
+
+var projectFileNames = map[string]bool{
+	".node-version": true, ".nvmrc": true, ".python-version": true, "Cargo.lock": true, "Cargo.toml": true,
+	"Directory.Packages.props": true, "Gemfile": true, "Gemfile.lock": true, "Package.resolved": true,
+	"Package.swift": true, "Pipfile": true, "Pipfile.lock": true, "Project.toml": true, "bun.lock": true,
+	"bun.lockb": true, "build.gradle": true, "build.gradle.kts": true, "composer.json": true, "composer.lock": true,
+	"conanfile.py": true, "conanfile.txt": true, "go.mod": true, "go.sum": true, "gradle.properties": true,
+	"mix.exs": true, "mix.lock": true, "npm-shrinkwrap.json": true, "package-lock.json": true, "package.json": true,
+	"packages.config": true, "pnpm-lock.yaml": true, "poetry.lock": true, "pom.xml": true, "pubspec.lock": true,
+	"pubspec.yaml": true, "pubspec.yml": true, "requirements.txt": true, "runtime.txt": true, "rust-toolchain": true,
+	"rust-toolchain.toml": true, "settings.gradle": true, "settings.gradle.kts": true, "vcpkg.json": true, "yarn.lock": true,
+}
+
+var projectIgnoredDirs = map[string]bool{
+	".cache": true, ".envdoctor": true, ".git": true, ".venv": true, "build": true, "dist": true,
+	"node_modules": true, "target": true, "vendor": true, "venv": true,
 }
 
 // Execute runs or previews normalized actions. Mutating execution requires Approved=true and DryRun=false.
@@ -132,12 +174,7 @@ func Execute(actions []Action, options Options) (*Report, error) {
 		StartedAt:  started,
 	}
 
-	writeAudit(auditFile, auditRecord{
-		Timestamp: started,
-		Type:      "session_start",
-		Mode:      mode,
-		Message:   fmt.Sprintf("received %d actions", len(actions)),
-	})
+	writeAudit(auditFile, auditRecord{Timestamp: started, Type: "session_start", Mode: mode, Message: fmt.Sprintf("received %d actions", len(actions))})
 
 	if mode == "apply" {
 		snapshotFile, err := createPreApplySnapshot(baseDir, started)
@@ -145,36 +182,34 @@ func Execute(actions []Action, options Options) (*Report, error) {
 			return nil, err
 		}
 		report.SnapshotFile = snapshotFile
-		writeAudit(auditFile, auditRecord{
-			Timestamp: time.Now(),
-			Type:      "snapshot",
-			Mode:      mode,
-			Message:   snapshotFile,
-		})
+		writeAudit(auditFile, auditRecord{Timestamp: time.Now(), Type: "snapshot", Mode: mode, Message: snapshotFile})
+	}
+
+	var projectBefore map[string]projectFileInfo
+	if mode == "apply" && hasProjectMutation(actions) {
+		projectBefore = collectProjectState(baseDir)
+		projectSnapshotFile, err := saveProjectSnapshot(baseDir, started, projectBefore)
+		if err != nil {
+			return nil, err
+		}
+		report.ProjectSnapshotFile = projectSnapshotFile
+		writeAudit(auditFile, auditRecord{Timestamp: time.Now(), Type: "project_snapshot", Mode: mode, Message: projectSnapshotFile})
 	}
 
 	for i, action := range actions {
 		normalized := normalizeAction(action, i, baseDir, timeout)
 		result := executeOne(normalized, mode, timeout)
 		report.Results = append(report.Results, result)
-		writeAudit(auditFile, auditRecord{
-			Timestamp: time.Now(),
-			Type:      "action_result",
-			Mode:      mode,
-			ActionID:  result.Action.ID,
-			Result:    &result,
-		})
+		writeAudit(auditFile, auditRecord{Timestamp: time.Now(), Type: "action_result", Mode: mode, ActionID: result.Action.ID, Result: &result})
+	}
+
+	if mode == "apply" && hasProjectMutation(actions) {
+		report.ProjectChanges = diffProjectStates(projectBefore, collectProjectState(baseDir))
 	}
 
 	report.FinishedAt = time.Now()
 	report.Summary = summarize(report)
-	writeAudit(auditFile, auditRecord{
-		Timestamp: report.FinishedAt,
-		Type:      "session_finish",
-		Mode:      mode,
-		Message:   report.Summary,
-	})
-
+	writeAudit(auditFile, auditRecord{Timestamp: report.FinishedAt, Type: "session_finish", Mode: mode, Message: report.Summary})
 	return report, nil
 }
 
@@ -186,20 +221,12 @@ func FromFixPlan(report *fixplan.Report, baseDir string) []Action {
 	actions := make([]Action, 0, len(report.Actions))
 	for _, action := range report.Actions {
 		actions = append(actions, Action{
-			ID:               action.ID,
-			Source:           valueOrDefault(action.Source, "fixplan"),
-			Category:         action.Category,
-			Title:            action.Title,
-			Description:      action.Description,
-			SuggestedCommand: action.Command,
-			ManualSteps:      action.ManualSteps,
-			WorkingDir:       valueOrDefault(action.WorkingDir, baseDir),
-			Risk:             valueOrDefault(action.Risk, "medium"),
-			RequiresAdmin:    action.RequiresAdmin,
-			SafeToRun:        action.SafeToRun,
-			Timeout:          action.Timeout,
-			RollbackHint:     action.RollbackHint,
-			Status:           action.Status,
+			ID: action.ID, Source: valueOrDefault(action.Source, "fixplan"), Category: action.Category,
+			Operation: action.Operation, Ecosystem: action.Ecosystem, PackageManager: action.PackageManager, Packages: action.Packages,
+			Title: action.Title, Description: action.Description, SuggestedCommand: action.Command, ManualSteps: action.ManualSteps,
+			WorkingDir: valueOrDefault(action.WorkingDir, baseDir), Risk: valueOrDefault(action.Risk, "medium"),
+			RequiresAdmin: action.RequiresAdmin, SafeToRun: action.SafeToRun, MutatesProject: action.MutatesProject,
+			CreatesProject: action.CreatesProject, Timeout: action.Timeout, RollbackHint: action.RollbackHint, Status: action.Status,
 		})
 	}
 	return actions
@@ -212,19 +239,12 @@ func FromInstallPlan(plan *installplan.Plan, baseDir string) []Action {
 	}
 	action := plan.Action
 	return []Action{{
-		ID:               action.ID,
-		Source:           valueOrDefault(action.Source, "installplan"),
-		Category:         "Install",
-		Title:            fmt.Sprintf("Install %s", action.Tool),
-		SuggestedCommand: action.Command,
-		ManualSteps:      action.ManualSteps,
-		WorkingDir:       valueOrDefault(action.WorkingDir, baseDir),
-		Risk:             valueOrDefault(action.Risk, "medium"),
-		RequiresAdmin:    action.RequiresAdmin,
-		SafeToRun:        action.SafeToRun,
-		Timeout:          action.Timeout,
-		RollbackHint:     action.RollbackHint,
-		Status:           action.Status,
+		ID: action.ID, Source: valueOrDefault(action.Source, "installplan"), Category: "Install",
+		Operation: action.Operation, Ecosystem: action.Ecosystem, PackageManager: action.PackageManager, Packages: action.Packages,
+		Title: fmt.Sprintf("Install %s", action.Tool), SuggestedCommand: action.Command, ManualSteps: action.ManualSteps,
+		WorkingDir: valueOrDefault(action.WorkingDir, baseDir), Risk: valueOrDefault(action.Risk, "medium"),
+		RequiresAdmin: action.RequiresAdmin, SafeToRun: action.SafeToRun, MutatesProject: action.MutatesProject,
+		CreatesProject: action.CreatesProject, Timeout: action.Timeout, RollbackHint: action.RollbackHint, Status: action.Status,
 	}}
 }
 
@@ -236,19 +256,12 @@ func FromVersionPlan(report *version.PlanReport, baseDir string) []Action {
 	actions := make([]Action, 0, len(report.Actions))
 	for _, action := range report.Actions {
 		actions = append(actions, Action{
-			ID:               action.ID,
-			Source:           valueOrDefault(action.Source, "version"),
-			Category:         "Version",
-			Title:            action.Title,
-			SuggestedCommand: action.Command,
-			ManualSteps:      action.ManualSteps,
-			WorkingDir:       valueOrDefault(action.WorkingDir, baseDir),
-			Risk:             valueOrDefault(action.Risk, "medium"),
-			RequiresAdmin:    action.RequiresAdmin,
-			SafeToRun:        action.SafeToRun,
-			Timeout:          action.Timeout,
-			RollbackHint:     action.RollbackHint,
-			Status:           "plan-only",
+			ID: action.ID, Source: valueOrDefault(action.Source, "version"), Category: "Version",
+			Operation: action.Operation, Ecosystem: action.Ecosystem, PackageManager: action.PackageManager, Packages: action.Packages,
+			Title: action.Title, SuggestedCommand: action.Command, ManualSteps: action.ManualSteps,
+			WorkingDir: valueOrDefault(action.WorkingDir, baseDir), Risk: valueOrDefault(action.Risk, "medium"),
+			RequiresAdmin: action.RequiresAdmin, SafeToRun: action.SafeToRun, MutatesProject: action.MutatesProject,
+			CreatesProject: action.CreatesProject, Timeout: action.Timeout, RollbackHint: action.RollbackHint, Status: "plan-only",
 		})
 	}
 	return actions
@@ -262,36 +275,22 @@ func FromBootstrapPlan(plan *bootstrap.Plan, baseDir string) []Action {
 	actions := make([]Action, 0, len(plan.Actions)+len(plan.InstallPlans))
 	for _, action := range plan.Actions {
 		actions = append(actions, Action{
-			ID:               action.ID,
-			Source:           valueOrDefault(action.Source, "bootstrap"),
-			Category:         action.Category,
-			Title:            action.Title,
-			SuggestedCommand: action.Command,
-			ManualSteps:      action.ManualSteps,
-			WorkingDir:       valueOrDefault(action.WorkingDir, baseDir),
-			Risk:             valueOrDefault(action.Risk, "medium"),
-			RequiresAdmin:    action.RequiresAdmin,
-			SafeToRun:        action.SafeToRun,
-			Timeout:          action.Timeout,
-			RollbackHint:     action.RollbackHint,
-			Status:           action.Status,
+			ID: action.ID, Source: valueOrDefault(action.Source, "bootstrap"), Category: action.Category,
+			Operation: action.Operation, Ecosystem: action.Ecosystem, PackageManager: action.PackageManager, Packages: action.Packages,
+			Title: action.Title, SuggestedCommand: action.Command, ManualSteps: action.ManualSteps,
+			WorkingDir: valueOrDefault(action.WorkingDir, baseDir), Risk: valueOrDefault(action.Risk, "medium"),
+			RequiresAdmin: action.RequiresAdmin, SafeToRun: action.SafeToRun, MutatesProject: action.MutatesProject,
+			CreatesProject: action.CreatesProject, Timeout: action.Timeout, RollbackHint: action.RollbackHint, Status: action.Status,
 		})
 	}
 	for _, action := range plan.InstallPlans {
 		actions = append(actions, Action{
-			ID:               action.ID,
-			Source:           valueOrDefault(action.Source, "bootstrap-install"),
-			Category:         "Install",
-			Title:            fmt.Sprintf("Install %s", action.Tool),
-			SuggestedCommand: action.Command,
-			ManualSteps:      action.ManualSteps,
-			WorkingDir:       valueOrDefault(action.WorkingDir, baseDir),
-			Risk:             valueOrDefault(action.Risk, "medium"),
-			RequiresAdmin:    action.RequiresAdmin,
-			SafeToRun:        action.SafeToRun,
-			Timeout:          action.Timeout,
-			RollbackHint:     action.RollbackHint,
-			Status:           action.Status,
+			ID: action.ID, Source: valueOrDefault(action.Source, "bootstrap-install"), Category: "Install",
+			Operation: action.Operation, Ecosystem: action.Ecosystem, PackageManager: action.PackageManager, Packages: action.Packages,
+			Title: fmt.Sprintf("Install %s", action.Tool), SuggestedCommand: action.Command, ManualSteps: action.ManualSteps,
+			WorkingDir: valueOrDefault(action.WorkingDir, baseDir), Risk: valueOrDefault(action.Risk, "medium"),
+			RequiresAdmin: action.RequiresAdmin, SafeToRun: action.SafeToRun, MutatesProject: action.MutatesProject,
+			CreatesProject: action.CreatesProject, Timeout: action.Timeout, RollbackHint: action.RollbackHint, Status: action.Status,
 		})
 	}
 	return actions
@@ -300,67 +299,40 @@ func FromBootstrapPlan(plan *bootstrap.Plan, baseDir string) []Action {
 func executeOne(action Action, mode string, timeout time.Duration) Result {
 	if action.SuggestedCommand == "" && action.Command == "" {
 		action.Status = "skipped"
-		return Result{
-			Action:  action,
-			Status:  "skipped",
-			Message: "manual-only action; no command to execute",
-		}
+		return Result{Action: action, Status: "skipped", Message: "manual-only action; no command to execute"}
 	}
-
 	if action.Command == "" {
 		commandName, args, err := parseSuggestedCommand(action.SuggestedCommand)
 		if err != nil {
 			action.Status = "blocked"
-			return Result{
-				Action: action,
-				Status: "blocked",
-				Error:  err.Error(),
-			}
+			return Result{Action: action, Status: "blocked", Error: err.Error()}
 		}
 		action.Command = commandName
 		action.Args = args
 	}
-
 	if err := validateAction(action); err != nil {
 		action.Status = "blocked"
-		return Result{
-			Action: action,
-			Status: "blocked",
-			Error:  err.Error(),
-		}
+		return Result{Action: action, Status: "blocked", Error: err.Error()}
 	}
-
 	if mode == "dry-run" {
 		action.Status = "dry-run"
-		return Result{
-			Action:  action,
-			Status:  "dry-run",
-			Message: "action validated but not executed; pass --yes to apply",
-		}
+		return Result{Action: action, Status: "dry-run", Message: "action validated but not executed; pass --yes to apply"}
 	}
 
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-
 	cmd := exec.CommandContext(ctx, action.Command, action.Args...)
 	if action.WorkingDir != "" {
 		cmd.Dir = action.WorkingDir
 	}
-
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
-	duration := time.Since(started)
-	result := Result{
-		Action:        action,
-		DurationMS:    duration.Milliseconds(),
-		StdoutPreview: preview(stdout.String()),
-		StderrPreview: preview(stderr.String()),
-	}
+	result := Result{Action: action, DurationMS: time.Since(started).Milliseconds(), StdoutPreview: preview(stdout.String()), StderrPreview: preview(stderr.String())}
 	if ctx.Err() == context.DeadlineExceeded {
 		result.Status = "timeout"
 		result.Error = fmt.Sprintf("command timed out after %s", timeout)
@@ -394,6 +366,7 @@ func normalizeAction(action Action, index int, baseDir string, timeout time.Dura
 	if action.Risk == "" {
 		action.Risk = "medium"
 	}
+	action.Packages = dedupe(action.Packages)
 	if action.WorkingDir == "" {
 		action.WorkingDir = baseDir
 	} else if absDir, err := filepath.Abs(action.WorkingDir); err == nil {
@@ -437,6 +410,9 @@ func validateAction(action Action) error {
 	if action.Command == "" {
 		return fmt.Errorf("missing executable command")
 	}
+	if isDeleteCommand(action.Command) {
+		return fmt.Errorf("delete commands are blocked by envdoctor: %s", action.Command)
+	}
 	if strings.ContainsAny(action.Command, `/\`) {
 		return fmt.Errorf("command must be an executable name, not a path: %s", action.Command)
 	}
@@ -459,29 +435,33 @@ func isAllowlisted(commandName string, args []string) bool {
 	case "choco":
 		return hasPrefix(args, "install")
 	case "npm", "yarn", "pnpm", "bun":
-		return hasPrefix(args, "install")
+		return allowNodePackageCommand(name, args)
+	case "npx":
+		return len(args) > 0 && (strings.HasPrefix(args[0], "create-") || strings.Contains(args[0], "@nestjs/cli"))
 	case "python", "python3":
-		return len(args) >= 4 && args[0] == "-m" && args[1] == "pip" && args[2] == "install"
+		return allowPythonCommand(args)
 	case "go":
-		return len(args) >= 2 && args[0] == "mod" && args[1] == "download"
+		return allowGoCommand(args)
 	case "cargo":
-		return hasPrefix(args, "fetch")
+		return hasAnyPrefix(args, "fetch", "init", "add", "update", "remove")
 	case "composer":
-		return hasPrefix(args, "install")
+		return hasAnyPrefix(args, "install", "init", "require", "update", "remove")
 	case "mvn":
-		return hasPrefix(args, "dependency:resolve")
+		return hasAnyPrefix(args, "dependency:resolve", "archetype:generate")
 	case "gradle":
-		return hasPrefix(args, "dependencies")
+		return hasAnyPrefix(args, "dependencies", "init")
 	case "dotnet":
-		return hasPrefix(args, "restore")
+		return allowDotnetCommand(args)
 	case "bundle":
-		return hasPrefix(args, "install")
+		return hasAnyPrefix(args, "install", "add", "update", "remove")
 	case "dart":
-		return len(args) >= 2 && args[0] == "pub" && args[1] == "get"
+		return allowDartCommand(args)
+	case "flutter":
+		return hasPrefix(args, "create")
 	case "swift":
-		return len(args) >= 2 && args[0] == "package" && args[1] == "resolve"
+		return allowSwiftCommand(args)
 	case "mix":
-		return hasPrefix(args, "deps.get")
+		return hasAnyPrefix(args, "deps.get", "new")
 	case "cpanm":
 		return hasPrefix(args, "--installdeps")
 	case "vcpkg":
@@ -535,16 +515,130 @@ func summarize(report *Report) string {
 		counts[result.Status]++
 	}
 	return fmt.Sprintf("%s completed: %d actions (dry-run: %d, executed: %d, blocked: %d, skipped: %d, failed: %d, timeout: %d). Audit log: %s",
-		report.Mode,
-		len(report.Results),
-		counts["dry-run"],
-		counts["executed"],
-		counts["blocked"],
-		counts["skipped"],
-		counts["failed"],
-		counts["timeout"],
-		report.AuditLog,
-	)
+		report.Mode, len(report.Results), counts["dry-run"], counts["executed"], counts["blocked"], counts["skipped"], counts["failed"], counts["timeout"], report.AuditLog)
+}
+
+func hasProjectMutation(actions []Action) bool {
+	for _, action := range actions {
+		if action.MutatesProject || action.CreatesProject {
+			return true
+		}
+	}
+	return false
+}
+
+func collectProjectState(root string) map[string]projectFileInfo {
+	state := map[string]projectFileInfo{}
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			if path != root && projectIgnoredDirs[entry.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !isProjectSnapshotFile(path) {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		info, err := projectFile(path, filepath.ToSlash(rel))
+		if err == nil {
+			state[info.Path] = info
+		}
+		return nil
+	})
+	return state
+}
+
+func saveProjectSnapshot(root string, now time.Time, state map[string]projectFileInfo) (string, error) {
+	dir := filepath.Join(root, ".envdoctor", "project-snapshots", now.Format("2006-01-02-150405"))
+	filesDir := filepath.Join(dir, "files")
+	if err := os.MkdirAll(filesDir, 0755); err != nil {
+		return "", err
+	}
+	files := make([]projectFileInfo, 0, len(state))
+	for _, info := range state {
+		files = append(files, info)
+		if err := copyFile(filepath.Join(root, filepath.FromSlash(info.Path)), filepath.Join(filesDir, filepath.FromSlash(info.Path))); err != nil {
+			return "", err
+		}
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	data, err := json.MarshalIndent(projectSnapshotManifest{Timestamp: now, Root: root, Files: files}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
+		return "", err
+	}
+	return manifestPath, nil
+}
+
+func diffProjectStates(before, after map[string]projectFileInfo) []string {
+	var changes []string
+	for path, beforeInfo := range before {
+		afterInfo, ok := after[path]
+		if !ok {
+			changes = append(changes, "removed: "+path)
+			continue
+		}
+		if beforeInfo.SHA256 != afterInfo.SHA256 {
+			changes = append(changes, "changed: "+path)
+		}
+	}
+	for path := range after {
+		if _, ok := before[path]; !ok {
+			changes = append(changes, "added: "+path)
+		}
+	}
+	sort.Strings(changes)
+	return changes
+}
+
+func projectFile(path, rel string) (projectFileInfo, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return projectFileInfo{}, err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return projectFileInfo{}, err
+	}
+	stat, err := file.Stat()
+	if err != nil {
+		return projectFileInfo{}, err
+	}
+	return projectFileInfo{Path: rel, Size: stat.Size(), SHA256: hex.EncodeToString(hash.Sum(nil)), ModTime: stat.ModTime().UTC().Format(time.RFC3339)}, nil
+}
+
+func isProjectSnapshotFile(path string) bool {
+	base := filepath.Base(path)
+	return projectFileNames[base] || strings.HasSuffix(base, ".csproj") || strings.HasSuffix(base, ".fsproj") || strings.HasSuffix(base, ".vbproj") || strings.HasSuffix(base, ".rockspec") || strings.HasSuffix(base, ".cabal")
+}
+
+func copyFile(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 func baseDirectory(dir string) (string, error) {
@@ -590,6 +684,87 @@ func hasPrefix(args []string, prefix string) bool {
 	return len(args) > 0 && strings.EqualFold(args[0], prefix)
 }
 
+func hasAnyPrefix(args []string, prefixes ...string) bool {
+	for _, prefix := range prefixes {
+		if hasPrefix(args, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func allowNodePackageCommand(name string, args []string) bool {
+	switch name {
+	case "npm":
+		return hasAnyPrefix(args, "install", "init", "update", "uninstall", "create")
+	case "yarn":
+		return hasAnyPrefix(args, "install", "add", "upgrade", "remove", "create")
+	case "pnpm":
+		return hasAnyPrefix(args, "install", "add", "update", "remove", "create")
+	case "bun":
+		return hasAnyPrefix(args, "install", "add", "update", "remove", "create")
+	default:
+		return false
+	}
+}
+
+func allowPythonCommand(args []string) bool {
+	if len(args) < 2 || args[0] != "-m" {
+		return false
+	}
+	switch args[1] {
+	case "pip":
+		return len(args) >= 3 && hasAnyPrefix(args[2:], "install", "uninstall")
+	case "venv":
+		return len(args) >= 3
+	default:
+		return false
+	}
+}
+
+func allowGoCommand(args []string) bool {
+	if len(args) < 2 {
+		return false
+	}
+	if args[0] == "mod" {
+		return hasAnyPrefix(args[1:], "download", "init", "tidy")
+	}
+	return hasPrefix(args, "get")
+}
+
+func allowDotnetCommand(args []string) bool {
+	if hasPrefix(args, "restore") || hasPrefix(args, "new") {
+		return true
+	}
+	if len(args) >= 3 && args[0] == "add" && args[1] == "package" {
+		return true
+	}
+	if len(args) >= 3 && args[0] == "remove" && args[1] == "package" {
+		return true
+	}
+	return false
+}
+
+func allowDartCommand(args []string) bool {
+	if hasPrefix(args, "create") {
+		return true
+	}
+	return len(args) >= 2 && args[0] == "pub" && hasAnyPrefix(args[1:], "get", "add", "upgrade", "remove")
+}
+
+func allowSwiftCommand(args []string) bool {
+	return len(args) >= 2 && args[0] == "package" && hasAnyPrefix(args[1:], "init", "resolve", "update")
+}
+
+func isDeleteCommand(commandName string) bool {
+	switch strings.ToLower(filepath.Base(commandName)) {
+	case "rm", "del", "erase", "remove-item", "rmdir", "rd":
+		return true
+	default:
+		return false
+	}
+}
+
 func commandLine(name string, args []string) string {
 	return strings.Join(append([]string{name}, args...), " ")
 }
@@ -615,6 +790,23 @@ func slug(value string) string {
 	}
 	if len(result) > 48 {
 		return result[:48]
+	}
+	return result
+}
+
+func dedupe(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
 	}
 	return result
 }

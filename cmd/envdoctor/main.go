@@ -18,6 +18,7 @@ import (
 	"github.com/stepanusjanu19/envdoctoragent/internal/executor"
 	"github.com/stepanusjanu19/envdoctoragent/internal/fixplan"
 	"github.com/stepanusjanu19/envdoctoragent/internal/installplan"
+	"github.com/stepanusjanu19/envdoctoragent/internal/projectops"
 	"github.com/stepanusjanu19/envdoctoragent/internal/recommendation"
 	"github.com/stepanusjanu19/envdoctoragent/internal/scanner"
 	"github.com/stepanusjanu19/envdoctoragent/internal/service"
@@ -651,6 +652,168 @@ Supports Linux, Windows, and macOS.`,
 	addExecutionFlags(bootstrapApplyCmd, &bootstrapApplyFlags)
 	bootstrapCmd.AddCommand(bootstrapPlanCmd, bootstrapApplyCmd)
 
+	// project command (safe execution preview)
+	var projectCmd = &cobra.Command{
+		Use:   "project",
+		Short: "Inspect, initialize, and manage project dependencies with approval-gated execution",
+	}
+	var projectScanJSON bool
+	var projectScanCmd = &cobra.Command{
+		Use:   "scan [directory]",
+		Short: "Scan project lifecycle metadata",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			report, err := projectops.Scan(dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error scanning project: %v\n", err)
+				os.Exit(1)
+			}
+			if projectScanJSON {
+				printJSON(report)
+			} else {
+				printProjectScan(report)
+			}
+		},
+	}
+	projectScanCmd.Flags().BoolVar(&projectScanJSON, "json", false, "Output in JSON format")
+
+	var projectInitCmd = &cobra.Command{
+		Use:   "init",
+		Short: "Plan or apply project initialization templates",
+	}
+	var projectInitPlanFlags projectFlags
+	var projectInitPlanCmd = &cobra.Command{
+		Use:   "plan <template> [directory]",
+		Short: "Plan initialization of a new project template",
+		Args:  cobra.RangeArgs(1, 2),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 1 {
+				dir = args[1]
+			}
+			plan, err := projectops.GenerateInitPlan(args[0], dir, projectOptions(projectInitPlanFlags))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating project init plan: %v\n", err)
+				os.Exit(1)
+			}
+			if projectInitPlanFlags.JSON {
+				printJSON(plan)
+			} else {
+				printProjectPlan(plan)
+			}
+		},
+	}
+	addProjectFlags(projectInitPlanCmd, &projectInitPlanFlags, true)
+
+	var projectInitApplyFlags projectFlags
+	var projectInitExecutionFlags executionFlags
+	var projectInitApplyCmd = &cobra.Command{
+		Use:   "apply <template> [directory]",
+		Short: "Dry-run or apply a project initialization template with approval",
+		Args:  cobra.RangeArgs(1, 2),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 1 {
+				dir = args[1]
+			}
+			plan, err := projectops.GenerateInitPlan(args[0], dir, projectOptions(projectInitApplyFlags))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating project init plan: %v\n", err)
+				os.Exit(1)
+			}
+			options, err := executionOptions(cmd, projectInitExecutionFlags, dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error preparing project init apply: %v\n", err)
+				os.Exit(1)
+			}
+			result, err := executor.Execute(plan.Actions, options)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error running project init apply: %v\n", err)
+				os.Exit(1)
+			}
+			if projectInitExecutionFlags.JSON {
+				printJSON(result)
+			} else {
+				printExecutionReport(result)
+			}
+		},
+	}
+	addProjectFlags(projectInitApplyCmd, &projectInitApplyFlags, false)
+	addExecutionFlags(projectInitApplyCmd, &projectInitExecutionFlags)
+	projectInitCmd.AddCommand(projectInitPlanCmd, projectInitApplyCmd)
+
+	var projectDepsCmd = &cobra.Command{
+		Use:   "deps",
+		Short: "Plan or apply project dependency operations",
+	}
+	var projectDepsPlanFlags projectFlags
+	var projectDepsPlanCmd = &cobra.Command{
+		Use:   "plan <sync|install|update|remove> [package] [directory]",
+		Short: "Plan a project dependency operation",
+		Args:  cobra.RangeArgs(1, 3),
+		Run: func(cmd *cobra.Command, args []string) {
+			operation, packageName, dir, err := parseProjectDepsArgs(args, projectDepsPlanFlags)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error parsing project deps plan: %v\n", err)
+				os.Exit(1)
+			}
+			plan, err := projectops.GenerateDepsPlan(operation, packageName, dir, projectOptions(projectDepsPlanFlags))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating project deps plan: %v\n", err)
+				os.Exit(1)
+			}
+			if projectDepsPlanFlags.JSON {
+				printJSON(plan)
+			} else {
+				printProjectPlan(plan)
+			}
+		},
+	}
+	addProjectFlags(projectDepsPlanCmd, &projectDepsPlanFlags, true)
+
+	var projectDepsApplyFlags projectFlags
+	var projectDepsExecutionFlags executionFlags
+	var projectDepsApplyCmd = &cobra.Command{
+		Use:   "apply <sync|install|update|remove> [package] [directory]",
+		Short: "Dry-run or apply a project dependency operation with approval",
+		Args:  cobra.RangeArgs(1, 3),
+		Run: func(cmd *cobra.Command, args []string) {
+			operation, packageName, dir, err := parseProjectDepsArgs(args, projectDepsApplyFlags)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error parsing project deps apply: %v\n", err)
+				os.Exit(1)
+			}
+			plan, err := projectops.GenerateDepsPlan(operation, packageName, dir, projectOptions(projectDepsApplyFlags))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating project deps plan: %v\n", err)
+				os.Exit(1)
+			}
+			options, err := executionOptions(cmd, projectDepsExecutionFlags, dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error preparing project deps apply: %v\n", err)
+				os.Exit(1)
+			}
+			result, err := executor.Execute(plan.Actions, options)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error running project deps apply: %v\n", err)
+				os.Exit(1)
+			}
+			if projectDepsExecutionFlags.JSON {
+				printJSON(result)
+			} else {
+				printExecutionReport(result)
+			}
+		},
+	}
+	addProjectFlags(projectDepsApplyCmd, &projectDepsApplyFlags, false)
+	addExecutionFlags(projectDepsApplyCmd, &projectDepsExecutionFlags)
+	projectDepsCmd.AddCommand(projectDepsPlanCmd, projectDepsApplyCmd)
+	projectCmd.AddCommand(projectScanCmd, projectInitCmd, projectDepsCmd)
+
 	// ui command (interactive, non-mutating)
 	var uiScript string
 	var uiCmd = &cobra.Command{
@@ -670,7 +833,7 @@ Supports Linux, Windows, and macOS.`,
 	}
 	uiCmd.Flags().StringVar(&uiScript, "script", "", "Run comma-separated UI actions for smoke checks, e.g. diagnose,fix,exit")
 
-	rootCmd.AddCommand(systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd, serviceCmd, versionCmd, installCmd, fixCmd, bootstrapCmd, uiCmd)
+	rootCmd.AddCommand(systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd, serviceCmd, versionCmd, installCmd, fixCmd, bootstrapCmd, projectCmd, uiCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -695,12 +858,45 @@ type executionFlags struct {
 	Timeout  string
 }
 
+type projectFlags struct {
+	JSON          bool
+	Ecosystem     string
+	Manager       string
+	Dev           bool
+	Version       string
+	All           bool
+	AllowNonEmpty bool
+}
+
 func addExecutionFlags(command *cobra.Command, flags *executionFlags) {
 	command.Flags().BoolVar(&flags.DryRun, "dry-run", true, "Preview actions without executing them")
 	command.Flags().BoolVar(&flags.Yes, "yes", false, "Approve execution of allowlisted actions")
 	command.Flags().BoolVar(&flags.JSON, "json", false, "Output in JSON format")
 	command.Flags().StringVar(&flags.AuditLog, "audit-log", "", "Write audit JSONL to the specified file")
 	command.Flags().StringVar(&flags.Timeout, "timeout", executor.DefaultTimeout.String(), "Per-action timeout, for example 30s or 2m")
+}
+
+func addProjectFlags(command *cobra.Command, flags *projectFlags, includeJSON bool) {
+	if includeJSON {
+		command.Flags().BoolVar(&flags.JSON, "json", false, "Output in JSON format")
+	}
+	command.Flags().StringVar(&flags.Ecosystem, "ecosystem", "", "Select ecosystem when multiple manifests are detected")
+	command.Flags().StringVar(&flags.Manager, "manager", "", "Override package manager for the selected ecosystem")
+	command.Flags().BoolVar(&flags.Dev, "dev", false, "Use development dependency scope when supported")
+	command.Flags().StringVar(&flags.Version, "version", "", "Dependency version constraint for install/update operations")
+	command.Flags().BoolVar(&flags.All, "all", false, "Apply update operation to all dependencies when supported")
+	command.Flags().BoolVar(&flags.AllowNonEmpty, "allow-non-empty", false, "Allow project init planning/apply in a non-empty directory")
+}
+
+func projectOptions(flags projectFlags) projectops.Options {
+	return projectops.Options{
+		Ecosystem:     flags.Ecosystem,
+		Manager:       flags.Manager,
+		Dev:           flags.Dev,
+		Version:       flags.Version,
+		All:           flags.All,
+		AllowNonEmpty: flags.AllowNonEmpty,
+	}
 }
 
 func executionOptions(command *cobra.Command, flags executionFlags, baseDir string) (executor.Options, error) {
@@ -739,6 +935,15 @@ func printExecutionReport(report *executor.Report) {
 	if report.SnapshotFile != "" {
 		fmt.Printf("Pre-apply snapshot: %s\n", report.SnapshotFile)
 	}
+	if report.ProjectSnapshotFile != "" {
+		fmt.Printf("Project snapshot: %s\n", report.ProjectSnapshotFile)
+	}
+	if len(report.ProjectChanges) > 0 {
+		fmt.Println("Project changes:")
+		for _, change := range report.ProjectChanges {
+			fmt.Printf("  - %s\n", change)
+		}
+	}
 	if len(report.Results) == 0 {
 		fmt.Println("No executable actions were generated.")
 		return
@@ -758,6 +963,90 @@ func printExecutionReport(report *executor.Report) {
 		}
 		if result.Action.RollbackHint != "" {
 			fmt.Printf("  Rollback hint: %s\n", result.Action.RollbackHint)
+		}
+	}
+}
+
+func parseProjectDepsArgs(args []string, flags projectFlags) (string, string, string, error) {
+	operation := strings.ToLower(strings.TrimSpace(args[0]))
+	rest := args[1:]
+	dir := "."
+	packageName := ""
+
+	switch operation {
+	case "sync":
+		if len(rest) > 1 {
+			return "", "", "", fmt.Errorf("sync accepts at most one directory argument")
+		}
+		if len(rest) == 1 {
+			dir = rest[0]
+		}
+	case "install", "remove":
+		if len(rest) == 0 {
+			return "", "", "", fmt.Errorf("%s requires a package name", operation)
+		}
+		packageName = rest[0]
+		if len(rest) > 1 {
+			dir = rest[1]
+		}
+	case "update":
+		if flags.All {
+			if len(rest) > 1 {
+				return "", "", "", fmt.Errorf("update --all accepts at most one directory argument")
+			}
+			if len(rest) == 1 {
+				dir = rest[0]
+			}
+			return operation, "", dir, nil
+		}
+		if len(rest) == 0 {
+			return "", "", "", fmt.Errorf("update requires a package name or --all")
+		}
+		packageName = rest[0]
+		if len(rest) > 1 {
+			dir = rest[1]
+		}
+	default:
+		return "", "", "", fmt.Errorf("unsupported operation %q", operation)
+	}
+	return operation, packageName, dir, nil
+}
+
+func printProjectScan(report *projectops.ScanReport) {
+	fmt.Println(report.Summary)
+	fmt.Printf("Directory: %s\n", report.Directory)
+	fmt.Printf("Status: %s\n", report.Status)
+	if len(report.Ecosystems) > 0 {
+		fmt.Printf("Ecosystems: %s\n", strings.Join(report.Ecosystems, ", "))
+	}
+	if len(report.Managers) > 0 {
+		fmt.Printf("Package managers: %s\n", strings.Join(report.Managers, ", "))
+	}
+	for _, manifest := range report.Manifests {
+		fmt.Printf("- %s (%s/%s, %s)\n", manifest.SourceFile, manifest.Ecosystem, manifest.PackageManager, manifest.ValidationStatus)
+	}
+}
+
+func printProjectPlan(plan *projectops.Plan) {
+	fmt.Println(plan.Summary)
+	fmt.Printf("Directory: %s\n", plan.Directory)
+	fmt.Printf("Operation: %s\n", plan.Operation)
+	if plan.Template != "" {
+		fmt.Printf("Template: %s\n", plan.Template)
+	}
+	if plan.Ecosystem != "" {
+		fmt.Printf("Ecosystem: %s\n", plan.Ecosystem)
+	}
+	if plan.PackageManager != "" {
+		fmt.Printf("Package manager: %s\n", plan.PackageManager)
+	}
+	for _, action := range plan.Actions {
+		fmt.Printf("- [%s] %s\n", valueOrDash(action.Status), action.Title)
+		if action.Command != "" {
+			fmt.Printf("  Command: %s\n", strings.Join(append([]string{action.Command}, action.Args...), " "))
+		}
+		if action.ManualSteps != "" {
+			fmt.Printf("  Manual steps: %s\n", action.ManualSteps)
 		}
 	}
 }

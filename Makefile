@@ -120,7 +120,8 @@ release-publish: tools-goreleaser
 	@VERSION="$(VERSION)" GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GORELEASER) release --clean
 
 smoke:
-	@mkdir -p "$(SMOKE_DIR)/node" "$(SMOKE_DIR)/go" "$(SMOKE_DIR)/version" "$(SMOKE_DIR)/bootstrap"
+	@rm -rf -- "$(SMOKE_DIR)/project-empty" "$(SMOKE_DIR)/project-node" "$(SMOKE_DIR)/project-yes"
+	@mkdir -p "$(SMOKE_DIR)/node" "$(SMOKE_DIR)/go" "$(SMOKE_DIR)/version" "$(SMOKE_DIR)/bootstrap" "$(SMOKE_DIR)/project-empty" "$(SMOKE_DIR)/project-node" "$(SMOKE_DIR)/project-yes"
 	@mkdir -p "$(DEPENDENCY_SMOKE_DIR)/python" "$(DEPENDENCY_SMOKE_DIR)/node" "$(DEPENDENCY_SMOKE_DIR)/go" "$(DEPENDENCY_SMOKE_DIR)/rust" "$(DEPENDENCY_SMOKE_DIR)/php"
 	@mkdir -p "$(DEPENDENCY_SMOKE_DIR)/maven" "$(DEPENDENCY_SMOKE_DIR)/gradle" "$(DEPENDENCY_SMOKE_DIR)/dotnet" "$(DEPENDENCY_SMOKE_DIR)/nuget-config" "$(DEPENDENCY_SMOKE_DIR)/nuget-props"
 	@mkdir -p "$(DEPENDENCY_SMOKE_DIR)/ruby" "$(DEPENDENCY_SMOKE_DIR)/dart" "$(DEPENDENCY_SMOKE_DIR)/swift" "$(DEPENDENCY_SMOKE_DIR)/elixir" "$(DEPENDENCY_SMOKE_DIR)/lua"
@@ -141,6 +142,7 @@ smoke:
 	@printf '%s\n' '{"engines":{"node":">=18"}}' > "$(SMOKE_DIR)/version/package.json"
 	@printf '%s\n' '[project]' 'requires-python = ">=3.11"' > "$(SMOKE_DIR)/version/pyproject.toml"
 	@printf '%s\n' '{"dependencies":{"express":"^5.0.0"}}' > "$(SMOKE_DIR)/bootstrap/package.json"
+	@printf '%s\n' '{"dependencies":{"express":"^5.0.0"}}' > "$(SMOKE_DIR)/project-node/package.json"
 	@printf '%s\n' 'FROM node:22-alpine' > "$(SMOKE_DIR)/bootstrap/Dockerfile"
 	@printf '%s\n' 'requests>=2.31' '-r common.txt' '--extra-index-url https://example.invalid/simple' > "$(DEPENDENCY_SMOKE_DIR)/python/requirements.txt"
 	@printf '%s\n' '[project]' 'dependencies = ["requests>=2.31"]' '[project.optional-dependencies]' 'dev = ["pytest>=8"]' > "$(DEPENDENCY_SMOKE_DIR)/python/pyproject.toml"
@@ -192,6 +194,30 @@ smoke:
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) install plan python --json > "$(SMOKE_DIR)/install-plan.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) fix plan --json "$(SMOKE_DIR)/version" > "$(SMOKE_DIR)/fix-plan.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) bootstrap plan --json "$(SMOKE_DIR)/bootstrap" > "$(SMOKE_DIR)/bootstrap-plan.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project scan --json "$(SMOKE_DIR)/project-node" > "$(SMOKE_DIR)/project-scan.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project init plan node --json "$(SMOKE_DIR)/project-empty" > "$(SMOKE_DIR)/project-init-plan.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project init apply go --dry-run --json --audit-log "$(SMOKE_DIR)/project-init-apply-audit.jsonl" "$(SMOKE_DIR)/project-empty" > "$(SMOKE_DIR)/project-init-apply.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project deps plan sync --json "$(SMOKE_DIR)/project-node" > "$(SMOKE_DIR)/project-deps-sync.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project deps plan install lodash --ecosystem node --json "$(SMOKE_DIR)/project-node" > "$(SMOKE_DIR)/project-deps-install.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project deps plan update lodash --ecosystem node --json "$(SMOKE_DIR)/project-node" > "$(SMOKE_DIR)/project-deps-update.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project deps plan remove lodash --ecosystem node --json "$(SMOKE_DIR)/project-node" > "$(SMOKE_DIR)/project-deps-remove.json"
+	@before="$$(cksum "$(SMOKE_DIR)/project-node/package.json")"; \
+		GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project deps apply sync --dry-run --json --audit-log "$(SMOKE_DIR)/project-deps-apply-audit.jsonl" "$(SMOKE_DIR)/project-node" > "$(SMOKE_DIR)/project-deps-apply.json"; \
+		after="$$(cksum "$(SMOKE_DIR)/project-node/package.json")"; \
+		if [ "$$before" != "$$after" ]; then \
+			printf 'Project deps dry-run mutated package.json.\n'; \
+			exit 1; \
+		fi
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project init apply go --yes --json --audit-log "$(SMOKE_DIR)/project-init-yes-audit.jsonl" "$(SMOKE_DIR)/project-yes" > "$(SMOKE_DIR)/project-init-yes.json"
+	@grep -q '"project_snapshot_file"' "$(SMOKE_DIR)/project-init-yes.json"
+	@if GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project init apply go --dry-run "$(SMOKE_DIR)/project-node" >/dev/null 2>&1; then \
+		printf 'Project init apply unexpectedly allowed non-empty directory.\n'; \
+		exit 1; \
+	fi
+	@if GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project deps apply remove --dry-run >/dev/null 2>&1; then \
+		printf 'Project deps remove unexpectedly allowed missing package.\n'; \
+		exit 1; \
+	fi
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) fix apply --dry-run --json --audit-log "$(SMOKE_DIR)/fix-apply-audit.jsonl" "$(SMOKE_DIR)/version" > "$(SMOKE_DIR)/fix-apply.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) install apply python --dry-run --json --audit-log "$(SMOKE_DIR)/install-apply-audit.jsonl" > "$(SMOKE_DIR)/install-apply.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) version apply --dry-run --json --audit-log "$(SMOKE_DIR)/version-apply-audit.jsonl" "$(SMOKE_DIR)/version" > "$(SMOKE_DIR)/version-apply.json"
@@ -200,7 +226,10 @@ smoke:
 	@test -s "$(SMOKE_DIR)/install-apply-audit.jsonl"
 	@test -s "$(SMOKE_DIR)/version-apply-audit.jsonl"
 	@test -s "$(SMOKE_DIR)/bootstrap-apply-audit.jsonl"
-	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run "$(SMOKE_DIR)/jsoncheck.go" "$(SMOKE_DIR)/system.json" "$(SMOKE_DIR)/toolchain.json" "$(SMOKE_DIR)/path.json" "$(SMOKE_DIR)/container.json" "$(SMOKE_DIR)/dependencies.json" "$(SMOKE_DIR)/snapshot.json" "$(SMOKE_DIR)/diagnose.json" "$(SMOKE_DIR)/explain.json" "$(SMOKE_DIR)/recommend.json" "$(SMOKE_DIR)/service.json" "$(SMOKE_DIR)/version-scan.json" "$(SMOKE_DIR)/version-plan.json" "$(SMOKE_DIR)/install-plan.json" "$(SMOKE_DIR)/fix-plan.json" "$(SMOKE_DIR)/bootstrap-plan.json" "$(SMOKE_DIR)/fix-apply.json" "$(SMOKE_DIR)/install-apply.json" "$(SMOKE_DIR)/version-apply.json" "$(SMOKE_DIR)/bootstrap-apply.json"
+	@test -s "$(SMOKE_DIR)/project-init-apply-audit.jsonl"
+	@test -s "$(SMOKE_DIR)/project-deps-apply-audit.jsonl"
+	@test -s "$(SMOKE_DIR)/project-init-yes-audit.jsonl"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run "$(SMOKE_DIR)/jsoncheck.go" "$(SMOKE_DIR)/system.json" "$(SMOKE_DIR)/toolchain.json" "$(SMOKE_DIR)/path.json" "$(SMOKE_DIR)/container.json" "$(SMOKE_DIR)/dependencies.json" "$(SMOKE_DIR)/snapshot.json" "$(SMOKE_DIR)/diagnose.json" "$(SMOKE_DIR)/explain.json" "$(SMOKE_DIR)/recommend.json" "$(SMOKE_DIR)/service.json" "$(SMOKE_DIR)/version-scan.json" "$(SMOKE_DIR)/version-plan.json" "$(SMOKE_DIR)/install-plan.json" "$(SMOKE_DIR)/fix-plan.json" "$(SMOKE_DIR)/bootstrap-plan.json" "$(SMOKE_DIR)/project-scan.json" "$(SMOKE_DIR)/project-init-plan.json" "$(SMOKE_DIR)/project-init-apply.json" "$(SMOKE_DIR)/project-deps-sync.json" "$(SMOKE_DIR)/project-deps-install.json" "$(SMOKE_DIR)/project-deps-update.json" "$(SMOKE_DIR)/project-deps-remove.json" "$(SMOKE_DIR)/project-deps-apply.json" "$(SMOKE_DIR)/project-init-yes.json" "$(SMOKE_DIR)/fix-apply.json" "$(SMOKE_DIR)/install-apply.json" "$(SMOKE_DIR)/version-apply.json" "$(SMOKE_DIR)/bootstrap-apply.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) ui --script "diagnose,version:$(SMOKE_DIR)/version,fix:$(SMOKE_DIR)/version,bootstrap:$(SMOKE_DIR)/bootstrap,exit" > "$(SMOKE_DIR)/ui.txt"
 	@grep -q 'Envdoctor Dashboard' "$(SMOKE_DIR)/ui.txt"
 	@grep -q 'Menu' "$(SMOKE_DIR)/ui.txt"

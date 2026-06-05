@@ -248,8 +248,16 @@ function Invoke-Smoke {
     $goDir = Join-Path $SmokeDir "go"
     $versionDir = Join-Path $SmokeDir "version"
     $bootstrapDir = Join-Path $SmokeDir "bootstrap"
+    $projectEmptyDir = Join-Path $SmokeDir "project-empty"
+    $projectNodeDir = Join-Path $SmokeDir "project-node"
+    $projectYesDir = Join-Path $SmokeDir "project-yes"
     $dependencyDir = Join-Path $SmokeDir "dependencies"
-    New-Item -ItemType Directory -Force -Path $nodeDir, $goDir, $versionDir, $bootstrapDir | Out-Null
+    foreach ($path in @($projectEmptyDir, $projectNodeDir, $projectYesDir)) {
+        if (Test-Path $path) {
+            Remove-Item -Recurse -Force $path
+        }
+    }
+    New-Item -ItemType Directory -Force -Path $nodeDir, $goDir, $versionDir, $bootstrapDir, $projectEmptyDir, $projectNodeDir, $projectYesDir | Out-Null
     @(
         "python", "node", "go", "rust", "php",
         "maven", "gradle", "dotnet", "nuget-config", "nuget-props",
@@ -285,6 +293,8 @@ function Invoke-Smoke {
         Set-Content -Path (Join-Path $versionDir "pyproject.toml") -Encoding UTF8
     '{"dependencies":{"express":"^5.0.0"}}' |
         Set-Content -Path (Join-Path $bootstrapDir "package.json") -Encoding UTF8
+    '{"dependencies":{"express":"^5.0.0"}}' |
+        Set-Content -Path (Join-Path $projectNodeDir "package.json") -Encoding UTF8
     "FROM node:22-alpine" |
         Set-Content -Path (Join-Path $bootstrapDir "Dockerfile") -Encoding UTF8
 
@@ -363,6 +373,43 @@ function Invoke-Smoke {
     $installPlan = Invoke-GoOutput @("run", $Pkg, "install", "plan", "python", "--json")
     $fixPlan = Invoke-GoOutput @("run", $Pkg, "fix", "plan", "--json", $versionDir)
     $bootstrapPlan = Invoke-GoOutput @("run", $Pkg, "bootstrap", "plan", "--json", $bootstrapDir)
+    $projectScan = Invoke-GoOutput @("run", $Pkg, "project", "scan", "--json", $projectNodeDir)
+    $projectInitPlan = Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "node", "--json", $projectEmptyDir)
+    $projectInitApplyAudit = Join-Path $SmokeDir "project-init-apply-audit.jsonl"
+    $projectDepsApplyAudit = Join-Path $SmokeDir "project-deps-apply-audit.jsonl"
+    $projectInitYesAudit = Join-Path $SmokeDir "project-init-yes-audit.jsonl"
+    $projectInitApply = Invoke-GoOutput @("run", $Pkg, "project", "init", "apply", "go", "--dry-run", "--json", "--audit-log", $projectInitApplyAudit, $projectEmptyDir)
+    $projectDepsSync = Invoke-GoOutput @("run", $Pkg, "project", "deps", "plan", "sync", "--json", $projectNodeDir)
+    $projectDepsInstall = Invoke-GoOutput @("run", $Pkg, "project", "deps", "plan", "install", "lodash", "--ecosystem", "node", "--json", $projectNodeDir)
+    $projectDepsUpdate = Invoke-GoOutput @("run", $Pkg, "project", "deps", "plan", "update", "lodash", "--ecosystem", "node", "--json", $projectNodeDir)
+    $projectDepsRemove = Invoke-GoOutput @("run", $Pkg, "project", "deps", "plan", "remove", "lodash", "--ecosystem", "node", "--json", $projectNodeDir)
+    $packageJsonPath = Join-Path $projectNodeDir "package.json"
+    $beforeHash = (Get-FileHash $packageJsonPath).Hash
+    $projectDepsApply = Invoke-GoOutput @("run", $Pkg, "project", "deps", "apply", "sync", "--dry-run", "--json", "--audit-log", $projectDepsApplyAudit, $projectNodeDir)
+    $afterHash = (Get-FileHash $packageJsonPath).Hash
+    if ($beforeHash -ne $afterHash) {
+        throw "Project deps dry-run mutated package.json"
+    }
+    $projectInitYes = Invoke-GoOutput @("run", $Pkg, "project", "init", "apply", "go", "--yes", "--json", "--audit-log", $projectInitYesAudit, $projectYesDir)
+    if (-not (($projectInitYes | ConvertFrom-Json).project_snapshot_file)) {
+        throw "Project init --yes did not report a project snapshot"
+    }
+    try {
+        Invoke-GoOutput @("run", $Pkg, "project", "init", "apply", "go", "--dry-run", $projectNodeDir) | Out-Null
+        throw "Project init apply unexpectedly allowed non-empty directory"
+    } catch {
+        if ($_.Exception.Message -eq "Project init apply unexpectedly allowed non-empty directory") {
+            throw
+        }
+    }
+    try {
+        Invoke-GoOutput @("run", $Pkg, "project", "deps", "apply", "remove", "--dry-run") | Out-Null
+        throw "Project deps remove unexpectedly allowed missing package"
+    } catch {
+        if ($_.Exception.Message -eq "Project deps remove unexpectedly allowed missing package") {
+            throw
+        }
+    }
     $fixApplyAudit = Join-Path $SmokeDir "fix-apply-audit.jsonl"
     $installApplyAudit = Join-Path $SmokeDir "install-apply-audit.jsonl"
     $versionApplyAudit = Join-Path $SmokeDir "version-apply-audit.jsonl"
@@ -374,6 +421,11 @@ function Invoke-Smoke {
     foreach ($auditPath in @($fixApplyAudit, $installApplyAudit, $versionApplyAudit, $bootstrapApplyAudit)) {
         if (-not (Test-Path $auditPath) -or (Get-Item $auditPath).Length -eq 0) {
             throw "Apply audit log was not created: $auditPath"
+        }
+    }
+    foreach ($auditPath in @($projectInitApplyAudit, $projectDepsApplyAudit, $projectInitYesAudit)) {
+        if (-not (Test-Path $auditPath) -or (Get-Item $auditPath).Length -eq 0) {
+            throw "Project audit log was not created: $auditPath"
         }
     }
     Invoke-GoOutput @("run", $Pkg, "ui", "--script", "diagnose,version:$versionDir,fix:$versionDir,bootstrap:$bootstrapDir,exit") |
@@ -400,6 +452,15 @@ function Invoke-Smoke {
     $installPlan | ConvertFrom-Json | Out-Null
     $fixPlan | ConvertFrom-Json | Out-Null
     $bootstrapPlan | ConvertFrom-Json | Out-Null
+    $projectScan | ConvertFrom-Json | Out-Null
+    $projectInitPlan | ConvertFrom-Json | Out-Null
+    $projectInitApply | ConvertFrom-Json | Out-Null
+    $projectDepsSync | ConvertFrom-Json | Out-Null
+    $projectDepsInstall | ConvertFrom-Json | Out-Null
+    $projectDepsUpdate | ConvertFrom-Json | Out-Null
+    $projectDepsRemove | ConvertFrom-Json | Out-Null
+    $projectDepsApply | ConvertFrom-Json | Out-Null
+    $projectInitYes | ConvertFrom-Json | Out-Null
     $fixApply | ConvertFrom-Json | Out-Null
     $installApply | ConvertFrom-Json | Out-Null
     $versionApply | ConvertFrom-Json | Out-Null
