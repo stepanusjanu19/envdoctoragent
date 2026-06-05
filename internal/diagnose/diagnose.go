@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"os"
 
-	"envdoctor/internal/common"
-	"envdoctor/internal/container"
-	"envdoctor/internal/recommendation"
-	"envdoctor/internal/scanner"
-	"envdoctor/internal/system"
+	"github.com/stepanusjanu19/envdoctoragent/internal/common"
+	"github.com/stepanusjanu19/envdoctoragent/internal/container"
+	"github.com/stepanusjanu19/envdoctoragent/internal/recommendation"
+	"github.com/stepanusjanu19/envdoctoragent/internal/scanner"
+	"github.com/stepanusjanu19/envdoctoragent/internal/system"
 )
 
 type Report struct {

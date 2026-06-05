@@ -7,8 +7,8 @@ import (
 	"runtime"
 	"strings"
 
-	"envdoctor/internal/command"
-	"envdoctor/internal/common"
+	"github.com/stepanusjanu19/envdoctoragent/internal/command"
+	"github.com/stepanusjanu19/envdoctoragent/internal/common"
 )
 
 // Detect collects system information and returns a SystemInfo struct

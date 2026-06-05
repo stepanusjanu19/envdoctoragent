@@ -5,10 +5,10 @@ import (
 	"os/exec"
 	"runtime"
 
-	"envdoctor/internal/common"
-	"envdoctor/internal/container"
-	"envdoctor/internal/scanner"
-	"envdoctor/internal/system"
+	"github.com/stepanusjanu19/envdoctoragent/internal/common"
+	"github.com/stepanusjanu19/envdoctoragent/internal/container"
+	"github.com/stepanusjanu19/envdoctoragent/internal/scanner"
+	"github.com/stepanusjanu19/envdoctoragent/internal/system"
 )
 
 // Recommendation represents a single actionable fix suggestion.

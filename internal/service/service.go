@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"envdoctor/internal/command"
+	"github.com/stepanusjanu19/envdoctoragent/internal/command"
 )
 
 // ServiceInfo describes a service discovered by the platform service manager.

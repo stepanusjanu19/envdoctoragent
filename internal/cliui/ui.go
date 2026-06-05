@@ -7,14 +7,14 @@ import (
 	"os"
 	"strings"
 
-	"envdoctor/internal/analyzer"
-	"envdoctor/internal/bootstrap"
-	"envdoctor/internal/diagnose"
-	"envdoctor/internal/fixplan"
-	"envdoctor/internal/installplan"
-	"envdoctor/internal/service"
-	"envdoctor/internal/snapshot"
-	"envdoctor/internal/version"
+	"github.com/stepanusjanu19/envdoctoragent/internal/analyzer"
+	"github.com/stepanusjanu19/envdoctoragent/internal/bootstrap"
+	"github.com/stepanusjanu19/envdoctoragent/internal/diagnose"
+	"github.com/stepanusjanu19/envdoctoragent/internal/fixplan"
+	"github.com/stepanusjanu19/envdoctoragent/internal/installplan"
+	"github.com/stepanusjanu19/envdoctoragent/internal/service"
+	"github.com/stepanusjanu19/envdoctoragent/internal/snapshot"
+	"github.com/stepanusjanu19/envdoctoragent/internal/version"
 )
 
 // Options configures the interactive CLI UI.

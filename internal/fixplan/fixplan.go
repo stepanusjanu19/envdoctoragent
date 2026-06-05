@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"runtime"
 
-	"envdoctor/internal/dependencies"
-	"envdoctor/internal/recommendation"
-	"envdoctor/internal/service"
-	"envdoctor/internal/version"
+	"github.com/stepanusjanu19/envdoctoragent/internal/dependencies"
+	"github.com/stepanusjanu19/envdoctoragent/internal/recommendation"
+	"github.com/stepanusjanu19/envdoctoragent/internal/service"
+	"github.com/stepanusjanu19/envdoctoragent/internal/version"
 )
 
 // Action is a non-mutating repair suggestion.

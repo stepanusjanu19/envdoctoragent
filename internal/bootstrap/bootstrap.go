@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"envdoctor/internal/dependencies"
-	"envdoctor/internal/installplan"
-	"envdoctor/internal/version"
+	"github.com/stepanusjanu19/envdoctoragent/internal/dependencies"
+	"github.com/stepanusjanu19/envdoctoragent/internal/installplan"
+	"github.com/stepanusjanu19/envdoctoragent/internal/version"
 )
 
 // Action is a plan-only bootstrap step.

@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"strings"
 
-	"envdoctor/internal/common"
+	"github.com/stepanusjanu19/envdoctoragent/internal/common"
 )
 
 // ScanPath analyzes the PATH environment variable and returns a report

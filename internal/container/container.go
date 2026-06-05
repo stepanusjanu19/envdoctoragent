@@ -5,7 +5,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"envdoctor/internal/command"
+	"github.com/stepanusjanu19/envdoctoragent/internal/command"
 )
 
 // ContainerInfo holds information about container environments

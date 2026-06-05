@@ -7,9 +7,9 @@ import (
 	"sort"
 	"time"
 
-	"envdoctor/internal/common"
-	"envdoctor/internal/scanner"
-	"envdoctor/internal/system"
+	"github.com/stepanusjanu19/envdoctoragent/internal/common"
+	"github.com/stepanusjanu19/envdoctoragent/internal/scanner"
+	"github.com/stepanusjanu19/envdoctoragent/internal/system"
 )
 
 // Snapshot represents a point-in-time capture of the environment

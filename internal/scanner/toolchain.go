@@ -5,8 +5,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"envdoctor/internal/command"
-	"envdoctor/internal/common"
+	"github.com/stepanusjanu19/envdoctoragent/internal/command"
+	"github.com/stepanusjanu19/envdoctoragent/internal/common"
 )
 
 // toolDef defines a tool and the CLI arguments used to fetch its version.

@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"envdoctor/internal/command"
+	"github.com/stepanusjanu19/envdoctoragent/internal/command"
 
 	"github.com/BurntSushi/toml"
 )

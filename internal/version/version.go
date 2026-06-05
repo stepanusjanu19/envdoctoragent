@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"envdoctor/internal/command"
+	"github.com/stepanusjanu19/envdoctoragent/internal/command"
 )
 
 // ManagerInfo describes a detected runtime version manager.
