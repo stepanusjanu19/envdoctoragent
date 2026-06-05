@@ -7,10 +7,19 @@ DIST_DIR ?= dist
 CACHE_DIR ?= .cache
 GOCACHE ?= $(CURDIR)/$(CACHE_DIR)/go-build
 GOMODCACHE ?= $(CURDIR)/$(CACHE_DIR)/go-mod
+TOOLS_DIR ?= $(CURDIR)/$(CACHE_DIR)/tools
 PKG ?= ./cmd/envdoctor
 PACKAGES ?= ./...
 ARGS ?= help
-PROD_LDFLAGS ?= -s -w
+GIT_TAG ?= $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' || true)
+VERSION ?= $(if $(GIT_TAG),$(GIT_TAG),0.0.0-dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf none)
+DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+RELEASE_REPOSITORY ?= stepanusjanu19/envdoctoragent
+GORELEASER_VERSION ?= v2.16.0
+GORELEASER ?= $(TOOLS_DIR)/goreleaser
+BUILD_LDFLAGS ?= -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+PROD_LDFLAGS ?= -s -w $(BUILD_LDFLAGS)
 RELEASE_TARGETS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 SMOKE_DIR ?= $(CURDIR)/$(CACHE_DIR)/smoke
 DEPENDENCY_SMOKE_DIR ?= $(SMOKE_DIR)/dependencies
@@ -20,7 +29,7 @@ HOST_GOOS := $(shell $(GO) env GOOS)
 EXE := $(if $(filter windows,$(HOST_GOOS)),.exe,)
 LOCAL_BIN := $(BIN_DIR)/$(BINARY)$(EXE)
 
-.PHONY: help fmt fmt-check vet test check build dev prod release smoke clean
+.PHONY: help fmt fmt-check vet test check build dev prod release-binaries release-check release release-publish tools-goreleaser smoke clean
 
 help:
 	@printf '%s\n' \
@@ -33,7 +42,9 @@ help:
 		'  make build                       Build local binary into bin/' \
 		'  make dev ARGS="diagnose --json"  Run CLI with go run' \
 		'  make prod                        Build optimized local production binary' \
-		'  make release                     Cross-compile Linux/macOS/Windows binaries' \
+		'  make release-binaries            Cross-compile raw Linux/macOS/Windows binaries' \
+		'  make release-check               Validate GoReleaser configuration' \
+		'  make release                     Build packaged snapshot artifacts into dist/' \
 		'  make smoke                       Run non-mutating smoke checks' \
 		'  make clean                       Remove bin/, dist/, and .cache/'
 
@@ -57,7 +68,7 @@ check: fmt-check test vet
 
 build:
 	@mkdir -p "$(BIN_DIR)"
-	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) build -o "$(LOCAL_BIN)" $(PKG)
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) build -ldflags="$(BUILD_LDFLAGS)" -o "$(LOCAL_BIN)" $(PKG)
 	@printf 'Built %s\n' "$(LOCAL_BIN)"
 
 dev:
@@ -68,7 +79,7 @@ prod:
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) build -trimpath -ldflags="$(PROD_LDFLAGS)" -o "$(LOCAL_BIN)" $(PKG)
 	@printf 'Built production binary %s\n' "$(LOCAL_BIN)"
 
-release:
+release-binaries:
 	@mkdir -p "$(DIST_DIR)"
 	@set -e; \
 	for target in $(RELEASE_TARGETS); do \
@@ -81,6 +92,32 @@ release:
 		GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" \
 			$(GO) build -trimpath -ldflags="$(PROD_LDFLAGS)" -o "$$out" $(PKG); \
 	done
+
+tools-goreleaser:
+	@if ! command -v "$(GORELEASER)" >/dev/null 2>&1; then \
+		if [ "$(GORELEASER)" != "$(TOOLS_DIR)/goreleaser" ]; then \
+			printf 'GoReleaser not found: %s\n' "$(GORELEASER)"; \
+			exit 127; \
+		fi; \
+		printf 'Installing GoReleaser %s into %s\n' "$(GORELEASER_VERSION)" "$(TOOLS_DIR)"; \
+		mkdir -p "$(TOOLS_DIR)"; \
+		GOBIN="$(TOOLS_DIR)" GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" \
+			$(GO) install github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION); \
+	fi
+
+release-check: tools-goreleaser
+	@$(GORELEASER) check
+
+release: tools-goreleaser
+	@VERSION="$(VERSION)" GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GORELEASER) release --snapshot --clean
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run ./cmd/releasemanifests \
+		--dist "$(DIST_DIR)" \
+		--version "$(VERSION)" \
+		--repository "$(RELEASE_REPOSITORY)"
+	@printf 'Release artifacts written to %s\n' "$(DIST_DIR)"
+
+release-publish: tools-goreleaser
+	@VERSION="$(VERSION)" GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GORELEASER) release --clean
 
 smoke:
 	@mkdir -p "$(SMOKE_DIR)/node" "$(SMOKE_DIR)/go" "$(SMOKE_DIR)/version" "$(SMOKE_DIR)/bootstrap"

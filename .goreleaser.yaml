@@ -1,0 +1,69 @@
+version: 2
+
+project_name: envdoctor
+dist: dist
+
+builds:
+  - id: envdoctor
+    main: ./cmd/envdoctor
+    binary: envdoctor
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
+
+archives:
+  - id: envdoctor
+    ids:
+      - envdoctor
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ .Env.VERSION }}"
+
+changelog:
+  disable: true
+
+nfpms:
+  - id: linux-packages
+    package_name: envdoctor
+    ids:
+      - envdoctor
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: stepanusjanu19
+    homepage: https://github.com/stepanusjanu19/envdoctoragent
+    maintainer: stepanusjanu19
+    description: Cross-platform development environment diagnostics CLI.
+    license: MIT
+    bindir: /usr/bin
+    formats:
+      - deb
+      - rpm
+      - apk
+      - archlinux
+
+release:
+  github:
+    owner: stepanusjanu19
+    name: envdoctoragent
+  draft: false
+  prerelease: auto

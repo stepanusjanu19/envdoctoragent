@@ -87,14 +87,36 @@ make check GOCACHE=.cache/go-build GOMODCACHE=.cache/go-mod
 # Current platform optimized binary
 make prod
 
-# Cross-platform release binaries
+# Cross-platform raw binaries
+make release-binaries
+
+# Validate release packaging config
+make release-check
+
+# Cross-platform archives, checksums, Linux packages, and package-manager manifests
 make release
+
+# Publish GitHub Release assets from a v* tag in CI
+make release-publish
 
 # Remove generated artifacts only
 make clean
 ```
 
+Release packaging requires Go and GoReleaser OSS. `make release` installs the configured GoReleaser version into `.cache/tools` when it is missing.
+
 Release builds are written to `dist/` for Linux, macOS, and Windows on `amd64` and `arm64`. Local development and production binaries are written to `bin/`.
+
+Generated release artifacts include:
+- `.tar.gz` archives for Linux and macOS.
+- `.zip` archives for Windows.
+- `checksums.txt`.
+- Linux native packages: `.deb`, `.rpm`, `.apk`, and Arch package.
+- Package-manager metadata under `dist/package-managers/` for Homebrew, Scoop, Winget, and Chocolatey.
+
+External package-manager publishing is intentionally not automated yet. Generated metadata can be published manually after repository/token decisions are made.
+
+GitHub Actions runs release snapshot packaging on normal push and pull request events. Tags matching `v*` can publish GoReleaser GitHub Release assets with `GITHUB_TOKEN`.
 
 ---
 
@@ -431,6 +453,8 @@ envdoctor
 ```sh
 make check
 make smoke
+make release-check
+make release
 ```
 
 With `_test.go` files intentionally removed, `go test ./...` is used as a package compile check inside `make check`. Manual smoke checks remain available for ad-hoc verification:
@@ -475,6 +499,7 @@ go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 | **Phase 4H** | ✅ Metadata Registry Implemented | Broad dependency manifest registry with metadata-only coverage |
 | **Phase 4I** | ✅ UI Polish Implemented | ANSI dashboard and stable stdlib terminal UI |
 | **Phase 5** | ✅ CI Added / 🚧 IDE Planned | GitHub Actions check/smoke/release workflow; VSCode and JetBrains wrappers planned |
+| **Phase 5B** | ✅ Release Packaging Implemented | GoReleaser archives, checksums, Linux packages, and package-manager metadata |
 | **Phase 6** | 🚧 Future Mutating / AI | Approval-gated auto-fix, AI troubleshooting, multi-agent diagnostics, remote/cloud validation |
 
 ---

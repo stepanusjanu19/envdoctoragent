@@ -55,8 +55,9 @@ jobs:
         run: ./scripts/windows.ps1 smoke
 
   release:
-    name: release-build
+    name: release-snapshot
     runs-on: ubuntu-latest
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,5 +68,50 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          install-only: true
+
+      - name: Release config check
+        env:
+          GORELEASER: goreleaser
+        run: make release-check
+
       - name: Release build
+        env:
+          GORELEASER: goreleaser
         run: make release
+
+  publish:
+    name: publish-release
+    runs-on: ubuntu-latest
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          install-only: true
+
+      - name: Publish GitHub Release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER: goreleaser
+        run: make release-publish

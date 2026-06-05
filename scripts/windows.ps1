@@ -1,11 +1,13 @@
 param(
-    [ValidateSet("help", "fmt", "fmt-check", "vet", "test", "check", "build", "dev", "prod", "release", "smoke", "clean")]
+    [ValidateSet("help", "fmt", "fmt-check", "vet", "test", "check", "build", "dev", "prod", "release-binaries", "release-check", "release", "smoke", "clean")]
     [string]$Target = "help",
     [string]$Args = "help",
     [string]$Binary = "envdoctor",
     [string]$BinDir = "bin",
     [string]$DistDir = "dist",
-    [string]$CacheDir = ".cache"
+    [string]$CacheDir = ".cache",
+    [string]$GoReleaserVersion = "v2.16.0",
+    [string]$ReleaseRepository = "stepanusjanu19/envdoctoragent"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +17,8 @@ $Pkg = "./cmd/envdoctor"
 $GoCache = Join-Path $Root (Join-Path $CacheDir "go-build")
 $GoModCache = Join-Path $Root (Join-Path $CacheDir "go-mod")
 $SmokeDir = Join-Path $Root (Join-Path $CacheDir "smoke")
+$ToolsDir = Join-Path $Root (Join-Path $CacheDir "tools")
+$GoReleaser = Join-Path $ToolsDir "goreleaser.exe"
 
 function Invoke-Go {
     param([string[]]$GoArgs)
@@ -98,21 +102,76 @@ function Get-LocalBinaryPath {
     Join-Path $Root (Join-Path $BinDir "$Binary$suffix")
 }
 
+function Get-Version {
+    $tag = (& git describe --tags --abbrev=0 2>$null)
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($tag)) {
+        $version = $tag.Trim().TrimStart("v")
+        if ($version -match "^\d+\.\d+\.\d+") {
+            return $version
+        }
+    }
+    return "0.0.0-dev"
+}
+
+function Get-Commit {
+    $commit = (& git rev-parse --short HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($commit)) {
+        return $commit.Trim()
+    }
+    return "none"
+}
+
+function Get-BuildDate {
+    (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+}
+
+function Get-LdFlags {
+    $version = Get-Version
+    $commit = Get-Commit
+    $date = Get-BuildDate
+    "-s -w -X main.version=$version -X main.commit=$commit -X main.date=$date"
+}
+
+function Install-GoReleaser {
+    if (Test-Path $GoReleaser) {
+        return
+    }
+    New-Item -ItemType Directory -Force -Path $ToolsDir | Out-Null
+    Write-Host "Installing GoReleaser $GoReleaserVersion into $ToolsDir"
+
+    $previousGoBin = $env:GOBIN
+    $previousGoCache = $env:GOCACHE
+    $previousGoModCache = $env:GOMODCACHE
+    $env:GOBIN = $ToolsDir
+    $env:GOCACHE = $GoCache
+    $env:GOMODCACHE = $GoModCache
+    try {
+        & go install "github.com/goreleaser/goreleaser/v2@$GoReleaserVersion"
+        if ($LASTEXITCODE -ne 0) {
+            throw "go install goreleaser failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        $env:GOBIN = $previousGoBin
+        $env:GOCACHE = $previousGoCache
+        $env:GOMODCACHE = $previousGoModCache
+    }
+}
+
 function Invoke-Build {
     New-Item -ItemType Directory -Force -Path (Join-Path $Root $BinDir) | Out-Null
     $out = Get-LocalBinaryPath
-    Invoke-Go @("build", "-o", $out, $Pkg)
+    Invoke-Go @("build", "-ldflags=$(Get-LdFlags)", "-o", $out, $Pkg)
     Write-Host "Built $out"
 }
 
 function Invoke-Prod {
     New-Item -ItemType Directory -Force -Path (Join-Path $Root $BinDir) | Out-Null
     $out = Get-LocalBinaryPath
-    Invoke-Go @("build", "-trimpath", "-ldflags=-s -w", "-o", $out, $Pkg)
+    Invoke-Go @("build", "-trimpath", "-ldflags=$(Get-LdFlags)", "-o", $out, $Pkg)
     Write-Host "Built production binary $out"
 }
 
-function Invoke-Release {
+function Invoke-ReleaseBinaries {
     $targets = @(
         @{ GOOS = "linux"; GOARCH = "amd64" },
         @{ GOOS = "linux"; GOARCH = "arm64" },
@@ -136,13 +195,48 @@ function Invoke-Release {
             $suffix = if ($target.GOOS -eq "windows") { ".exe" } else { "" }
             $out = Join-Path $distPath "$Binary-$($target.GOOS)-$($target.GOARCH)$suffix"
             Write-Host "Building $out"
-            Invoke-Go @("build", "-trimpath", "-ldflags=-s -w", "-o", $out, $Pkg)
+            Invoke-Go @("build", "-trimpath", "-ldflags=$(Get-LdFlags)", "-o", $out, $Pkg)
         }
     } finally {
         $env:GOOS = $previousGoos
         $env:GOARCH = $previousGoarch
         $env:CGO_ENABLED = $previousCgo
     }
+}
+
+function Invoke-ReleaseCheck {
+    Install-GoReleaser
+    & $GoReleaser check
+    if ($LASTEXITCODE -ne 0) {
+        throw "goreleaser check failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Invoke-Release {
+    Install-GoReleaser
+    $previousVersion = $env:VERSION
+    $previousGoCache = $env:GOCACHE
+    $previousGoModCache = $env:GOMODCACHE
+    try {
+        $env:VERSION = Get-Version
+        $env:GOCACHE = $GoCache
+        $env:GOMODCACHE = $GoModCache
+        & $GoReleaser release --snapshot --clean
+        if ($LASTEXITCODE -ne 0) {
+            throw "goreleaser release failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        $env:VERSION = $previousVersion
+        $env:GOCACHE = $previousGoCache
+        $env:GOMODCACHE = $previousGoModCache
+    }
+    Invoke-Go @(
+        "run", "./cmd/releasemanifests",
+        "--dist", (Join-Path $Root $DistDir),
+        "--version", (Get-Version),
+        "--repository", $ReleaseRepository
+    )
+    Write-Host "Release artifacts written to $DistDir"
 }
 
 function Invoke-Dev {
@@ -319,6 +413,8 @@ function Show-Help {
     Write-Host "  pwsh ./scripts/windows.ps1 check"
     Write-Host "  pwsh ./scripts/windows.ps1 build"
     Write-Host "  pwsh ./scripts/windows.ps1 prod"
+    Write-Host "  pwsh ./scripts/windows.ps1 release-binaries"
+    Write-Host "  pwsh ./scripts/windows.ps1 release-check"
     Write-Host "  pwsh ./scripts/windows.ps1 release"
     Write-Host "  pwsh ./scripts/windows.ps1 smoke"
     Write-Host "  pwsh ./scripts/windows.ps1 clean"
@@ -336,6 +432,8 @@ switch ($Target) {
     "build" { Invoke-Build }
     "dev" { Invoke-Dev }
     "prod" { Invoke-Prod }
+    "release-binaries" { Invoke-ReleaseBinaries }
+    "release-check" { Invoke-ReleaseCheck }
     "release" { Invoke-Release }
     "smoke" { Invoke-Smoke }
     "clean" { Invoke-Clean }

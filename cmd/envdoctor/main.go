@@ -22,15 +22,16 @@ import (
 	"envdoctor/internal/service"
 	"envdoctor/internal/snapshot"
 	"envdoctor/internal/system"
-	"envdoctor/internal/version"
+	versionpkg "envdoctor/internal/version"
 
 	"github.com/spf13/cobra"
 )
 
 func main() {
 	var rootCmd = &cobra.Command{
-		Use:   "envdoctor",
-		Short: "Environment Doctor Agent - detect, analyze, and resolve dev env issues",
+		Use:     "envdoctor",
+		Short:   "Environment Doctor Agent - detect, analyze, and resolve dev env issues",
+		Version: buildVersion(),
 		Long: `An intelligent cross-platform environment diagnostic tool.
 Supports Linux, Windows, and macOS.`,
 	}
@@ -400,7 +401,7 @@ Supports Linux, Windows, and macOS.`,
 			if len(args) > 0 {
 				dir = args[0]
 			}
-			report, err := version.Scan(dir)
+			report, err := versionpkg.Scan(dir)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error scanning versions: %v\n", err)
 				os.Exit(1)
@@ -424,7 +425,7 @@ Supports Linux, Windows, and macOS.`,
 			if len(args) > 0 {
 				dir = args[0]
 			}
-			report, err := version.Plan(dir)
+			report, err := versionpkg.Plan(dir)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error creating version plan: %v\n", err)
 				os.Exit(1)
@@ -587,7 +588,7 @@ func printServiceInfo(info *service.ServiceInfo) {
 	}
 }
 
-func printVersionScan(report *version.ScanReport) {
+func printVersionScan(report *versionpkg.ScanReport) {
 	fmt.Println(report.Summary)
 	fmt.Println()
 	fmt.Println("Version managers:")
@@ -615,7 +616,7 @@ func printVersionScan(report *version.ScanReport) {
 	}
 }
 
-func printVersionPlan(report *version.PlanReport) {
+func printVersionPlan(report *versionpkg.PlanReport) {
 	fmt.Println(report.Summary)
 	for _, action := range report.Actions {
 		fmt.Printf("- %s\n", action.Title)
