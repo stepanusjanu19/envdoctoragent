@@ -15,6 +15,8 @@ const (
 	SourceInternal = "internal"
 	SourceOfficial = "official"
 	SourceManual   = "manual"
+
+	targetArg = "{{target}}"
 )
 
 // Options controls scaffold template selection and file safety.
@@ -50,13 +52,14 @@ type Template struct {
 
 // Plan is produced by the scaffold registry and embedded by projectops.
 type Plan struct {
-	Directory       string         `json:"directory"`
-	Template        Template       `json:"template"`
-	SelectedSource  string         `json:"selected_source"`
-	RequiresNetwork bool           `json:"requires_network"`
-	Files           []FileMetadata `json:"files,omitempty"`
-	Actions         []executor.Action
-	Summary         string `json:"summary"`
+	Directory        string         `json:"directory"`
+	ExecutionBaseDir string         `json:"execution_base_dir,omitempty"`
+	Template         Template       `json:"template"`
+	SelectedSource   string         `json:"selected_source"`
+	RequiresNetwork  bool           `json:"requires_network"`
+	Files            []FileMetadata `json:"files,omitempty"`
+	Actions          []executor.Action
+	Summary          string `json:"summary"`
 }
 
 type fileTemplate struct {
@@ -69,6 +72,9 @@ type context struct {
 	Slug        string
 	Snake       string
 	Pascal      string
+	Dir         string
+	Parent      string
+	TargetName  string
 	Module      string
 	PackageName string
 	PackagePath string
@@ -145,7 +151,8 @@ func Generate(template, dir string, options Options) (*Plan, error) {
 	}
 
 	var actions []executor.Action
-	if !exists && options.CreateDir {
+	needsTargetDir := officialNeedsTargetDir(def)
+	if !exists && options.CreateDir && needsTargetDir {
 		actions = append(actions, mkdirAction("Create project directory", "."))
 	}
 
@@ -157,13 +164,14 @@ func Generate(template, dir string, options Options) (*Plan, error) {
 
 	metadata := def.metadata(ctx, source)
 	return &Plan{
-		Directory:       absDir,
-		Template:        metadata,
-		SelectedSource:  source,
-		RequiresNetwork: source == SourceOfficial && def.RequiresNetwork,
-		Files:           metadata.Files,
-		Actions:         actions,
-		Summary:         fmt.Sprintf("Generated %d scaffold action(s) for %s using %s source. No commands were executed.", len(actions), def.ID, source),
+		Directory:        absDir,
+		ExecutionBaseDir: officialExecutionBaseDir(absDir, def),
+		Template:         metadata,
+		SelectedSource:   source,
+		RequiresNetwork:  source == SourceOfficial && def.RequiresNetwork,
+		Files:            metadata.Files,
+		Actions:          actions,
+		Summary:          fmt.Sprintf("Generated %d scaffold action(s) for %s using %s source. No commands were executed.", len(actions), def.ID, source),
 	}, nil
 }
 
@@ -171,11 +179,11 @@ func registry() map[string]templateDef {
 	defs := []templateDef{
 		internalTemplate("node", "Node.js", "", "node", "npm", "Minimal Node.js application", nodeFiles).withOfficial(false, official("Initialize npm package", "npm", "init", "-y")),
 		internalTemplate("express", "Node.js", "Express", "node", "npm", "Express HTTP API starter", expressFiles),
-		internalTemplate("react-vite", "Node.js", "React + Vite", "node", "npm", "React Vite starter", reactViteFiles).withOfficial(true, official("Run Vite React generator", "npm", "create", "vite@latest", ".", "--", "--template", "react")),
-		internalTemplate("vue-vite", "Node.js", "Vue + Vite", "node", "npm", "Vue Vite starter", vueViteFiles).withOfficial(true, official("Run Vite Vue generator", "npm", "create", "vite@latest", ".", "--", "--template", "vue")),
-		internalTemplate("next", "Node.js", "Next.js", "node", "npm", "Next.js app router starter", nextFiles).withOfficial(true, official("Run Next.js generator", "npx", "create-next-app@latest", ".", "--yes", "--use-npm", "--typescript", "--eslint", "--app", "--src-dir")),
-		internalTemplate("sveltekit", "Node.js", "SvelteKit", "node", "npm", "SvelteKit starter", svelteKitFiles).withOfficial(true, official("Run SvelteKit generator", "npx", "sv", "create", ".", "--template", "minimal", "--types", "ts", "--no-add-ons", "--no-install")),
-		internalTemplate("nestjs", "Node.js", "NestJS", "node", "npm", "NestJS starter", nestFiles).withOfficial(true, official("Run NestJS generator", "npx", "@nestjs/cli", "new", ".", "--package-manager", "npm", "--skip-git", "--strict")),
+		internalTemplate("react-vite", "Node.js", "React + Vite", "node", "npm", "React Vite starter", reactViteFiles).withOfficial(true, officialPathArg("Run Vite React generator", "npm", "create", "vite@latest", targetArg, "--", "--template", "react")),
+		internalTemplate("vue-vite", "Node.js", "Vue + Vite", "node", "npm", "Vue Vite starter", vueViteFiles).withOfficial(true, officialPathArg("Run Vite Vue generator", "npm", "create", "vite@latest", targetArg, "--", "--template", "vue")),
+		internalTemplate("next", "Node.js", "Next.js", "node", "npm", "Next.js app router starter", nextFiles).withOfficial(true, officialPathArg("Run Next.js generator", "npx", "create-next-app@latest", targetArg, "--yes", "--use-npm", "--typescript", "--eslint", "--app", "--src-dir")),
+		internalTemplate("sveltekit", "Node.js", "SvelteKit", "node", "npm", "SvelteKit starter", svelteKitFiles).withOfficial(true, officialPathArg("Run SvelteKit generator", "npx", "sv", "create", targetArg, "--template", "minimal", "--types", "ts", "--no-add-ons", "--no-install")),
+		internalTemplate("nestjs", "Node.js", "NestJS", "node", "npm", "NestJS starter", nestFiles).withOfficial(true, officialPathArg("Run NestJS generator", "npx", "@nestjs/cli", "new", targetArg, "--package-manager", "npm", "--skip-git", "--strict")),
 		internalTemplate("python", "Python", "", "python", "pip", "Python package starter", pythonPackageFiles),
 		internalTemplate("python-cli", "Python", "CLI", "python", "pip", "Python CLI starter", pythonCLIFiles),
 		internalTemplate("fastapi", "Python", "FastAPI", "python", "pip", "FastAPI application starter", fastAPIFiles),
@@ -184,26 +192,26 @@ func registry() map[string]templateDef {
 		internalTemplate("go-module", "Go", "Module", "go", "go modules", "Go module starter", goModuleFiles).withOfficial(false, officialGoModInit),
 		internalTemplate("go-cli", "Go", "CLI", "go", "go modules", "Go CLI starter", goCLIFiles),
 		internalTemplate("go-web", "Go", "HTTP", "go", "go modules", "Go HTTP server starter", goWebFiles),
-		internalTemplate("rust", "Rust", "CLI", "rust", "cargo", "Rust CLI starter", rustCLIFiles).withOfficial(false, official("Run Cargo init", "cargo", "init", ".")),
-		internalTemplate("rust-cli", "Rust", "CLI", "rust", "cargo", "Rust CLI starter", rustCLIFiles).withOfficial(false, official("Run Cargo init", "cargo", "init", ".")),
-		internalTemplate("rust-lib", "Rust", "Library", "rust", "cargo", "Rust library starter", rustLibFiles).withOfficial(false, official("Run Cargo library init", "cargo", "init", "--lib", ".")),
+		internalTemplate("rust", "Rust", "CLI", "rust", "cargo", "Rust CLI starter", rustCLIFiles).withOfficial(false, official("Run Cargo init", "cargo", "init")),
+		internalTemplate("rust-cli", "Rust", "CLI", "rust", "cargo", "Rust CLI starter", rustCLIFiles).withOfficial(false, official("Run Cargo init", "cargo", "init")),
+		internalTemplate("rust-lib", "Rust", "Library", "rust", "cargo", "Rust library starter", rustLibFiles).withOfficial(false, official("Run Cargo library init", "cargo", "init", "--lib")),
 		internalTemplate("rust-web", "Rust", "Axum", "rust", "cargo", "Rust web service starter", rustWebFiles),
 		internalTemplate("php", "PHP", "Composer", "php", "composer", "PHP Composer starter", phpComposerFiles),
 		internalTemplate("php-composer", "PHP", "Composer", "php", "composer", "PHP Composer starter", phpComposerFiles),
-		officialOnly("laravel", "PHP", "Laravel", "php", "composer", "Laravel application starter", true, official("Run Laravel Composer generator", "composer", "create-project", "laravel/laravel", ".")),
+		officialOnly("laravel", "PHP", "Laravel", "php", "composer", "Laravel application starter", true, officialPathArg("Run Laravel Composer generator", "composer", "create-project", "laravel/laravel", targetArg)),
 		internalTemplate("java-maven", "Java", "Maven", "jvm", "maven", "Java Maven starter", javaMavenFiles),
 		internalTemplate("java-gradle", "Java", "Gradle", "jvm", "gradle", "Java Gradle starter", javaGradleFiles),
 		internalTemplate("kotlin-gradle", "Kotlin", "Gradle", "jvm", "gradle", "Kotlin Gradle starter", kotlinGradleFiles),
 		internalTemplate("spring-boot", "Java", "Spring Boot", "jvm", "maven", "Spring Boot starter", springBootFiles),
-		internalTemplate("dotnet", ".NET", "Console", "dotnet", "dotnet", ".NET console starter", dotnetConsoleFiles).withOfficial(false, official("Run dotnet console generator", "dotnet", "new", "console", "--output", ".")),
-		internalTemplate("dotnet-console", ".NET", "Console", "dotnet", "dotnet", ".NET console starter", dotnetConsoleFiles).withOfficial(false, official("Run dotnet console generator", "dotnet", "new", "console", "--output", ".")),
-		internalTemplate("dotnet-webapi", ".NET", "Web API", "dotnet", "dotnet", ".NET minimal API starter", dotnetWebAPIFiles).withOfficial(false, official("Run dotnet webapi generator", "dotnet", "new", "webapi", "--output", ".")),
-		internalTemplate("dart", "Dart", "Console", "dart", "pub", "Dart console starter", dartConsoleFiles).withOfficial(false, official("Run Dart generator", "dart", "create", ".")),
-		internalTemplate("dart-console", "Dart", "Console", "dart", "pub", "Dart console starter", dartConsoleFiles).withOfficial(false, official("Run Dart generator", "dart", "create", ".")),
-		officialOnly("flutter", "Dart", "Flutter", "dart", "flutter", "Flutter app starter", true, official("Run Flutter generator", "flutter", "create", ".")),
-		officialOnly("flutter-app", "Dart", "Flutter", "dart", "flutter", "Flutter app starter", true, official("Run Flutter generator", "flutter", "create", ".")),
+		internalTemplate("dotnet", ".NET", "Console", "dotnet", "dotnet", ".NET console starter", dotnetConsoleFiles).withOfficial(false, officialPathArg("Run dotnet console generator", "dotnet", "new", "console", "--output", targetArg)),
+		internalTemplate("dotnet-console", ".NET", "Console", "dotnet", "dotnet", ".NET console starter", dotnetConsoleFiles).withOfficial(false, officialPathArg("Run dotnet console generator", "dotnet", "new", "console", "--output", targetArg)),
+		internalTemplate("dotnet-webapi", ".NET", "Web API", "dotnet", "dotnet", ".NET minimal API starter", dotnetWebAPIFiles).withOfficial(false, officialPathArg("Run dotnet webapi generator", "dotnet", "new", "webapi", "--output", targetArg)),
+		internalTemplate("dart", "Dart", "Console", "dart", "pub", "Dart console starter", dartConsoleFiles).withOfficial(false, officialPathArg("Run Dart generator", "dart", "create", targetArg)),
+		internalTemplate("dart-console", "Dart", "Console", "dart", "pub", "Dart console starter", dartConsoleFiles).withOfficial(false, officialPathArg("Run Dart generator", "dart", "create", targetArg)),
+		officialOnly("flutter", "Dart", "Flutter", "dart", "flutter", "Flutter app starter", true, officialPathArg("Run Flutter generator", "flutter", "create", targetArg)),
+		officialOnly("flutter-app", "Dart", "Flutter", "dart", "flutter", "Flutter app starter", true, officialPathArg("Run Flutter generator", "flutter", "create", targetArg)),
 		internalTemplate("swift", "Swift", "SwiftPM", "swift", "swiftpm", "Swift executable starter", swiftFiles).withOfficial(false, official("Run SwiftPM init", "swift", "package", "init", "--type", "executable")),
-		internalTemplate("elixir", "Elixir", "Mix", "elixir", "mix", "Elixir Mix starter", elixirFiles).withOfficial(false, official("Run Mix generator", "mix", "new", ".")),
+		internalTemplate("elixir", "Elixir", "Mix", "elixir", "mix", "Elixir Mix starter", elixirFiles).withOfficial(false, officialPathArg("Run Mix generator", "mix", "new", targetArg)),
 		internalTemplate("ruby", "Ruby", "Bundler", "ruby", "bundler", "Ruby starter", rubyFiles),
 		internalTemplate("c-cli", "C", "CLI", "c", "make", "C CLI starter", cFiles),
 		internalTemplate("cpp-cli", "C++", "CMake", "cpp", "cmake", "C++ CMake starter", cppFiles),
@@ -280,6 +288,22 @@ func availableSources(def templateDef) []string {
 		return nil
 	}
 	return []string{SourceOfficial}
+}
+
+func officialNeedsTargetDir(def templateDef) bool {
+	switch def.ID {
+	case "node", "go", "go-module", "rust", "rust-cli", "rust-lib", "swift":
+		return true
+	default:
+		return false
+	}
+}
+
+func officialExecutionBaseDir(dir string, def templateDef) string {
+	if officialNeedsTargetDir(def) {
+		return dir
+	}
+	return filepath.Dir(dir)
 }
 
 func prepareDirectory(dir string, create bool) (string, bool, error) {
@@ -379,7 +403,7 @@ func finalizeAction(action executor.Action, dir string, def templateDef, source 
 	action.Operation = "init"
 	action.Ecosystem = def.Ecosystem
 	action.PackageManager = def.PackageManager
-	action.WorkingDir = dir
+	action.WorkingDir = valueOrDefault(action.WorkingDir, dir)
 	action.Risk = valueOrDefault(action.Risk, "medium")
 	action.SafeToRun = false
 	action.CreatesProject = true
@@ -408,6 +432,22 @@ func manualAction(title, steps string) executor.Action {
 func official(title, command string, args ...string) func(context) []executor.Action {
 	return func(context) []executor.Action {
 		return []executor.Action{officialAction(title, command, args...)}
+	}
+}
+
+func officialPathArg(title, command string, args ...string) func(context) []executor.Action {
+	return func(ctx context) []executor.Action {
+		resolved := make([]string, 0, len(args))
+		for _, arg := range args {
+			if arg == targetArg {
+				resolved = append(resolved, ctx.TargetName)
+			} else {
+				resolved = append(resolved, arg)
+			}
+		}
+		action := officialAction(title, command, resolved...)
+		action.WorkingDir = ctx.Parent
+		return []executor.Action{action}
 	}
 }
 
@@ -474,6 +514,9 @@ func defaultContext(dir, name string) context {
 		Slug:        s,
 		Snake:       snake,
 		Pascal:      pascal,
+		Dir:         dir,
+		Parent:      filepath.Dir(dir),
+		TargetName:  filepath.Base(dir),
 		Module:      "example.com/" + s,
 		PackageName: pkg,
 		PackagePath: strings.ReplaceAll(pkg, ".", "/"),

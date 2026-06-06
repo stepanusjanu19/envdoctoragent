@@ -804,7 +804,11 @@ Supports Linux, Windows, and macOS.`,
 				fmt.Fprintf(os.Stderr, "Error creating project init plan: %v\n", err)
 				os.Exit(1)
 			}
-			options, err := executionOptions(cmd, projectInitExecutionFlags, plan.Directory)
+			executionBaseDir := plan.Directory
+			if plan.ExecutionBaseDir != "" {
+				executionBaseDir = plan.ExecutionBaseDir
+			}
+			options, err := executionOptions(cmd, projectInitExecutionFlags, executionBaseDir)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error preparing project init apply: %v\n", err)
 				os.Exit(1)

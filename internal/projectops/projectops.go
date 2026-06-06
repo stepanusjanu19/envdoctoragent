@@ -48,18 +48,19 @@ type ScanReport struct {
 
 // Plan is the project lifecycle plan output.
 type Plan struct {
-	Directory       string                  `json:"directory"`
-	Operation       string                  `json:"operation"`
-	Template        string                  `json:"template,omitempty"`
-	Source          string                  `json:"source,omitempty"`
-	Ecosystem       string                  `json:"ecosystem,omitempty"`
-	PackageManager  string                  `json:"package_manager,omitempty"`
-	Package         string                  `json:"package,omitempty"`
-	RequiresNetwork bool                    `json:"requires_network,omitempty"`
-	Files           []scaffold.FileMetadata `json:"files,omitempty"`
-	Actions         []executor.Action       `json:"actions"`
-	Status          string                  `json:"status"`
-	Summary         string                  `json:"summary"`
+	Directory        string                  `json:"directory"`
+	ExecutionBaseDir string                  `json:"execution_base_dir,omitempty"`
+	Operation        string                  `json:"operation"`
+	Template         string                  `json:"template,omitempty"`
+	Source           string                  `json:"source,omitempty"`
+	Ecosystem        string                  `json:"ecosystem,omitempty"`
+	PackageManager   string                  `json:"package_manager,omitempty"`
+	Package          string                  `json:"package,omitempty"`
+	RequiresNetwork  bool                    `json:"requires_network,omitempty"`
+	Files            []scaffold.FileMetadata `json:"files,omitempty"`
+	Actions          []executor.Action       `json:"actions"`
+	Status           string                  `json:"status"`
+	Summary          string                  `json:"summary"`
 }
 
 type projectTarget struct {
@@ -127,17 +128,18 @@ func GenerateInitPlan(template, dir string, options Options) (*Plan, error) {
 		return nil, err
 	}
 	return &Plan{
-		Directory:       scaffoldPlan.Directory,
-		Operation:       OperationInit,
-		Template:        scaffoldPlan.Template.ID,
-		Source:          scaffoldPlan.SelectedSource,
-		Ecosystem:       scaffoldPlan.Template.Ecosystem,
-		PackageManager:  scaffoldPlan.Template.PackageManager,
-		RequiresNetwork: scaffoldPlan.RequiresNetwork,
-		Files:           scaffoldPlan.Files,
-		Actions:         scaffoldPlan.Actions,
-		Status:          "project-scaffolding-preview",
-		Summary:         scaffoldPlan.Summary,
+		Directory:        scaffoldPlan.Directory,
+		ExecutionBaseDir: scaffoldPlan.ExecutionBaseDir,
+		Operation:        OperationInit,
+		Template:         scaffoldPlan.Template.ID,
+		Source:           scaffoldPlan.SelectedSource,
+		Ecosystem:        scaffoldPlan.Template.Ecosystem,
+		PackageManager:   scaffoldPlan.Template.PackageManager,
+		RequiresNetwork:  scaffoldPlan.RequiresNetwork,
+		Files:            scaffoldPlan.Files,
+		Actions:          scaffoldPlan.Actions,
+		Status:           "project-scaffolding-preview",
+		Summary:          scaffoldPlan.Summary,
 	}, nil
 }
 

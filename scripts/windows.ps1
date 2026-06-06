@@ -87,6 +87,82 @@ function Test-OutputNotContains {
     return -not (Test-OutputContains $Output $Pattern)
 }
 
+function Normalize-PathText {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return ""
+    }
+    $trimChars = [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    return ([System.IO.Path]::GetFullPath($Path)).TrimEnd($trimChars)
+}
+
+function Assert-ScaffoldPlan {
+    param(
+        $Output,
+        [ValidateSet("path", "target")]
+        [string]$Mode
+    )
+
+    $plan = $Output | ConvertFrom-Json
+    if ($plan.source -ne "official") {
+        throw "$($plan.template) scaffold plan is not official"
+    }
+    $executionBaseDir = $plan.execution_base_dir
+    if ([string]::IsNullOrWhiteSpace($executionBaseDir)) {
+        $executionBaseDir = $plan.directory
+    }
+    $parent = Split-Path -Parent $plan.directory
+    $commandCount = 0
+    $hasMkdir = $false
+    foreach ($action in @($plan.actions)) {
+        if ($action.type -eq "write_file" -or $action.type -eq "manual") {
+            throw "$($plan.template) exposed $($action.type) action"
+        }
+        if ($action.type -eq "mkdir") {
+            $hasMkdir = $true
+        }
+        if ($action.type -ne "command") {
+            continue
+        }
+        $commandCount++
+        if ([string]::IsNullOrWhiteSpace($action.working_dir)) {
+            throw "$($plan.template) command has empty working_dir"
+        }
+        if ($Mode -eq "path") {
+            if ((Normalize-PathText $action.working_dir) -ne (Normalize-PathText $parent)) {
+                throw "$($plan.template) command working_dir was not the target parent"
+            }
+            if (@($action.args) -contains ".") {
+                throw "$($plan.template) path-arg generator used . destination"
+            }
+        } elseif ((Normalize-PathText $action.working_dir) -ne (Normalize-PathText $plan.directory)) {
+            throw "$($plan.template) command working_dir was not the target directory"
+        }
+    }
+    if ($commandCount -eq 0) {
+        throw "$($plan.template) has no command action"
+    }
+    if ($Mode -eq "path") {
+        if ($hasMkdir) {
+            throw "$($plan.template) path-arg generator should not pre-create target"
+        }
+        if ((Normalize-PathText $executionBaseDir) -ne (Normalize-PathText $parent)) {
+            throw "$($plan.template) execution_base_dir was not the target parent"
+        }
+    } elseif ((Normalize-PathText $executionBaseDir) -ne (Normalize-PathText $plan.directory)) {
+        throw "$($plan.template) execution_base_dir was not the target directory"
+    }
+    if ($plan.template -eq "laravel") {
+        $command = @($plan.actions | Where-Object { $_.type -eq "command" })[0]
+        $target = Split-Path -Leaf $plan.directory
+        $args = @($command.args)
+        if ($command.command -ne "composer" -or $args.Count -ne 3 -or $args[0] -ne "create-project" -or $args[1] -ne "laravel/laravel" -or $args[2] -ne $target) {
+            throw "Laravel scaffold args were not composer create-project laravel/laravel <target>"
+        }
+    }
+}
+
 function Get-GoFiles {
     Get-ChildItem -Path (Join-Path $Root "cmd"), (Join-Path $Root "internal") -Recurse -Filter "*.go" |
         ForEach-Object { $_.FullName }
@@ -459,6 +535,30 @@ function Invoke-Smoke {
     if (($scaffoldLaravelPlan | ConvertFrom-Json).source -ne "official") {
         throw "Laravel scaffold plan is not official"
     }
+    Assert-ScaffoldPlan $scaffoldLaravelPlan "path"
+    $scaffoldLaravelApplyDir = Join-Path $SmokeDir "scaffold-laravel-apply"
+    $beforeLaravelApply = 0
+    if (Test-Path $scaffoldLaravelApplyDir) {
+        $beforeLaravelApply = (Get-ChildItem -Force -Path $scaffoldLaravelApplyDir | Measure-Object).Count
+    }
+    $scaffoldLaravelApply = Invoke-GoOutput @("run", $Pkg, "project", "init", "apply", "laravel", "--dry-run", "--json", "--create-dir", $scaffoldLaravelApplyDir)
+    $afterLaravelApply = 0
+    if (Test-Path $scaffoldLaravelApplyDir) {
+        $afterLaravelApply = (Get-ChildItem -Force -Path $scaffoldLaravelApplyDir | Measure-Object).Count
+    }
+    if ($beforeLaravelApply -ne $afterLaravelApply) {
+        throw "Laravel scaffold dry-run created files"
+    }
+    foreach ($template in @("react-vite", "vue-vite", "next", "sveltekit", "nestjs", "laravel", "dotnet", "dotnet-console", "dotnet-webapi", "dart", "dart-console", "flutter", "flutter-app", "elixir")) {
+        $templateDir = Join-Path $SmokeDir "scaffold-matrix-$template"
+        $templatePlan = Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", $template, "--json", "--create-dir", $templateDir)
+        Assert-ScaffoldPlan $templatePlan "path"
+    }
+    foreach ($template in @("node", "go", "go-module", "rust", "rust-cli", "rust-lib", "swift")) {
+        $templateDir = Join-Path $SmokeDir "scaffold-matrix-$template"
+        $templatePlan = Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", $template, "--json", "--create-dir", $templateDir)
+        Assert-ScaffoldPlan $templatePlan "target"
+    }
     try {
         Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "go-web", "--json", "--create-dir", $scaffoldGoWebDir) | Out-Null
         throw "Project scaffold unexpectedly exposed go-web without a safe official generator"
@@ -627,6 +727,7 @@ function Invoke-Smoke {
     $projectInitPlan | ConvertFrom-Json | Out-Null
     $scaffoldReactPlan | ConvertFrom-Json | Out-Null
     $scaffoldLaravelPlan | ConvertFrom-Json | Out-Null
+    $scaffoldLaravelApply | ConvertFrom-Json | Out-Null
     $projectInitApply | ConvertFrom-Json | Out-Null
     $projectDepsSync | ConvertFrom-Json | Out-Null
     $projectDepsSyncGo | ConvertFrom-Json | Out-Null

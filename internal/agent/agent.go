@@ -123,6 +123,9 @@ func Run(options Options, execution executor.Options) (*Report, error) {
 	}
 	if execution.BaseDir == "" {
 		execution.BaseDir = report.Directory
+		if report.ProjectPlan != nil && report.ProjectPlan.ExecutionBaseDir != "" {
+			execution.BaseDir = report.ProjectPlan.ExecutionBaseDir
+		}
 	}
 	if execution.Profile == "" && execution.PolicyFile == "" {
 		execution.Profile = report.Profile
