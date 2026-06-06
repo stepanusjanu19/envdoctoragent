@@ -57,6 +57,36 @@ function Invoke-GoOutput {
     }
 }
 
+function Join-OutputText {
+    param($Output)
+
+    if ($null -eq $Output) {
+        return ""
+    }
+    if ($Output -is [array]) {
+        return ($Output -join [Environment]::NewLine)
+    }
+    return [string]$Output
+}
+
+function Test-OutputContains {
+    param(
+        $Output,
+        [string]$Pattern
+    )
+
+    return (Join-OutputText $Output) -match $Pattern
+}
+
+function Test-OutputNotContains {
+    param(
+        $Output,
+        [string]$Pattern
+    )
+
+    return -not (Test-OutputContains $Output $Pattern)
+}
+
 function Get-GoFiles {
     Get-ChildItem -Path (Join-Path $Root "cmd"), (Join-Path $Root "internal") -Recurse -Filter "*.go" |
         ForEach-Object { $_.FullName }
@@ -369,19 +399,20 @@ function Invoke-Smoke {
     $agentPlanText = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--goal", "diagnose")
     $projectTemplatesText = Invoke-GoOutput @("run", $Pkg, "project", "templates")
     $diagnosePlain = Invoke-GoOutput @("run", $Pkg, "--plain", "diagnose")
-    if ($aboutText -notmatch "Envdoctor") {
+    if (-not (Test-OutputContains $aboutText "Envdoctor")) {
         throw "About output did not contain Envdoctor title"
     }
-    if ($diagnoseText -notmatch "Progress:") {
+    if (-not (Test-OutputContains $diagnoseText "Progress:")) {
         throw "Diagnose output did not contain progress"
     }
-    if ($agentPlanText -notmatch "Next steps") {
+    if (-not (Test-OutputContains $agentPlanText "Next steps")) {
         throw "Agent plan output did not contain next steps"
     }
-    if ($projectTemplatesText -notmatch "Project Templates") {
+    if (-not (Test-OutputContains $projectTemplatesText "Project Templates")) {
         throw "Project templates output did not contain friendly title"
     }
-    if ($diagnosePlain -match "Progress:" -or $diagnosePlain.Contains([string][char]27)) {
+    $diagnosePlainText = Join-OutputText $diagnosePlain
+    if ((Test-OutputContains $diagnosePlainText "Progress:") -or $diagnosePlainText.Contains([string][char]27)) {
         throw "Plain output contained progress or ANSI escape codes"
     }
 
