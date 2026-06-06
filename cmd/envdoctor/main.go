@@ -10,6 +10,7 @@ import (
 
 	"github.com/stepanusjanu19/envdoctoragent/internal/agent"
 	"github.com/stepanusjanu19/envdoctoragent/internal/analyzer"
+	"github.com/stepanusjanu19/envdoctoragent/internal/automation"
 	"github.com/stepanusjanu19/envdoctoragent/internal/bootstrap"
 	"github.com/stepanusjanu19/envdoctoragent/internal/cliui"
 	"github.com/stepanusjanu19/envdoctoragent/internal/container"
@@ -961,6 +962,70 @@ Supports Linux, Windows, and macOS.`,
 	addAgentFlags(agentRunCmd, &agentRunFlags, true)
 	agentCmd.AddCommand(agentPlanCmd, agentRunCmd)
 
+	// automation command (controlled automation finalize)
+	var automationCmd = &cobra.Command{
+		Use:   "automation",
+		Short: "Plan or run controlled automation workflows through policy-gated execution",
+	}
+	var automationPlanFlags automationCommandFlags
+	var automationPlanCmd = &cobra.Command{
+		Use:   "plan [directory]",
+		Short: "Create a controlled automation plan without executing actions",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			report, err := automation.Plan(automationOptions(automationPlanFlags, dir))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating automation plan: %v\n", err)
+				os.Exit(1)
+			}
+			if automationPlanFlags.JSON {
+				printJSON(report)
+			} else {
+				printAutomationReport(report)
+			}
+		},
+	}
+	addAutomationFlags(automationPlanCmd, &automationPlanFlags, false)
+
+	var automationRunFlags automationCommandFlags
+	var automationRunCmd = &cobra.Command{
+		Use:   "run [directory]",
+		Short: "Dry-run or apply a controlled automation workflow with policy approval",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			execFlags := executionFlags{
+				DryRun: automationRunFlags.DryRun, Yes: automationRunFlags.Yes, JSON: automationRunFlags.JSON,
+				AuditLog: automationRunFlags.AuditLog, Timeout: automationRunFlags.Timeout,
+				Profile: automationRunFlags.Profile, MaxRisk: automationRunFlags.MaxRisk, PolicyFile: automationRunFlags.PolicyFile,
+			}
+			options, err := executionOptions(cmd, execFlags, dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error preparing automation run: %v\n", err)
+				os.Exit(1)
+			}
+			report, err := automation.Run(automationOptions(automationRunFlags, dir), options)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error running automation: %v\n", err)
+				os.Exit(1)
+			}
+			if automationRunFlags.JSON {
+				printJSON(report)
+			} else {
+				printAutomationReport(report)
+			}
+		},
+	}
+	addAutomationFlags(automationRunCmd, &automationRunFlags, true)
+	automationCmd.AddCommand(automationPlanCmd, automationRunCmd)
+
 	// ui command (interactive, non-mutating)
 	var uiScript string
 	var uiCmd = &cobra.Command{
@@ -982,7 +1047,7 @@ Supports Linux, Windows, and macOS.`,
 	}
 	uiCmd.Flags().StringVar(&uiScript, "script", "", "Run comma-separated UI actions for smoke checks, e.g. diagnose,fix,exit")
 
-	rootCmd.AddCommand(aboutCmd, systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd, serviceCmd, versionCmd, installCmd, fixCmd, bootstrapCmd, projectCmd, agentCmd, uiCmd)
+	rootCmd.AddCommand(aboutCmd, systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd, serviceCmd, versionCmd, installCmd, fixCmd, bootstrapCmd, projectCmd, agentCmd, automationCmd, uiCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1114,6 +1179,26 @@ type agentCommandFlags struct {
 	AllowNonEmpty bool
 }
 
+type automationCommandFlags struct {
+	DryRun        bool
+	Yes           bool
+	JSON          bool
+	AuditLog      string
+	Timeout       string
+	Profile       string
+	MaxRisk       string
+	PolicyFile    string
+	Goal          string
+	Template      string
+	Name          string
+	Module        string
+	PackageName   string
+	Source        string
+	CreateDir     bool
+	Force         bool
+	AllowNonEmpty bool
+}
+
 func addExecutionFlags(command *cobra.Command, flags *executionFlags) {
 	command.Flags().BoolVar(&flags.DryRun, "dry-run", true, "Preview actions without executing them")
 	command.Flags().BoolVar(&flags.Yes, "yes", false, "Approve execution of allowlisted actions")
@@ -1131,6 +1216,28 @@ func addAgentFlags(command *cobra.Command, flags *agentCommandFlags, includeExec
 	command.Flags().StringVar(&flags.MaxRisk, "max-risk", executor.RiskHigh, "Maximum action risk allowed by policy: low, medium, or high")
 	command.Flags().StringVar(&flags.PolicyFile, "policy-file", "", "Optional JSON policy file")
 	command.Flags().StringVar(&flags.Goal, "goal", agent.GoalDiagnose, "Agent goal: diagnose, onboard, repair, scaffold, or bootstrap")
+	command.Flags().StringVar(&flags.Template, "template", "", "Scaffold template id for --goal scaffold")
+	command.Flags().StringVar(&flags.Name, "name", "", "Project display/package name for scaffold templates")
+	command.Flags().StringVar(&flags.Module, "module", "", "Module path for scaffold templates")
+	command.Flags().StringVar(&flags.PackageName, "package", "", "Package or namespace for scaffold templates")
+	command.Flags().StringVar(&flags.Source, "source", "auto", "Scaffold source: auto or official (official-only)")
+	command.Flags().BoolVar(&flags.CreateDir, "create-dir", false, "Create the target project directory when it does not exist")
+	command.Flags().BoolVar(&flags.Force, "force", false, "Allow scaffold file overwrite when safe")
+	command.Flags().BoolVar(&flags.AllowNonEmpty, "allow-non-empty", false, "Allow scaffold planning/apply in a non-empty directory")
+	if includeExecution {
+		command.Flags().BoolVar(&flags.DryRun, "dry-run", true, "Preview actions without executing them")
+		command.Flags().BoolVar(&flags.Yes, "yes", false, "Approve execution of allowlisted actions")
+		command.Flags().StringVar(&flags.AuditLog, "audit-log", "", "Write audit JSONL to the specified file")
+		command.Flags().StringVar(&flags.Timeout, "timeout", executor.DefaultTimeout.String(), "Per-action timeout, for example 30s or 2m")
+	}
+}
+
+func addAutomationFlags(command *cobra.Command, flags *automationCommandFlags, includeExecution bool) {
+	command.Flags().BoolVar(&flags.JSON, "json", false, "Output in JSON format")
+	command.Flags().StringVar(&flags.Profile, "profile", executor.ProfileDevelopment, "Policy profile: development or production")
+	command.Flags().StringVar(&flags.MaxRisk, "max-risk", executor.RiskHigh, "Maximum action risk allowed by policy: low, medium, or high")
+	command.Flags().StringVar(&flags.PolicyFile, "policy-file", "", "Optional JSON policy file")
+	command.Flags().StringVar(&flags.Goal, "goal", automation.GoalDiagnose, "Automation goal: diagnose, onboard, repair, scaffold, bootstrap, or maintain")
 	command.Flags().StringVar(&flags.Template, "template", "", "Scaffold template id for --goal scaffold")
 	command.Flags().StringVar(&flags.Name, "name", "", "Project display/package name for scaffold templates")
 	command.Flags().StringVar(&flags.Module, "module", "", "Module path for scaffold templates")
@@ -1188,6 +1295,25 @@ func projectOptions(flags projectFlags) projectops.Options {
 
 func agentOptions(flags agentCommandFlags, dir string) agent.Options {
 	return agent.Options{
+		Directory: dir,
+		Goal:      flags.Goal,
+		Template:  flags.Template,
+		Profile:   flags.Profile,
+		MaxRisk:   flags.MaxRisk,
+		Project: projectops.Options{
+			Name:          flags.Name,
+			Module:        flags.Module,
+			PackageName:   flags.PackageName,
+			Source:        flags.Source,
+			Force:         flags.Force,
+			CreateDir:     flags.CreateDir,
+			AllowNonEmpty: flags.AllowNonEmpty,
+		},
+	}
+}
+
+func automationOptions(flags automationCommandFlags, dir string) automation.Options {
+	return automation.Options{
 		Directory: dir,
 		Goal:      flags.Goal,
 		Template:  flags.Template,
@@ -1369,6 +1495,57 @@ func printAgentReport(report *agent.Report) {
 		return
 	}
 	ui.NextSteps("Use agent run --dry-run before --yes.", "Use --json to pass the report into IDE or CI wrappers.")
+}
+
+func printAutomationReport(report *automation.Report) {
+	ui := newPresenter()
+	ui.Header("Envdoctor Automation", "controlled automation finalize")
+	ui.Progress(1, 4, "Resolve goals")
+	ui.Progress(2, 4, "Collect agent plans")
+	ui.Progress(3, 4, "Summarize policy")
+	ui.Progress(4, 4, "Prepare report")
+	ui.Section("Summary")
+	ui.Row("Result", report.Summary)
+	ui.Row("Goal", report.Goal)
+	ui.Row("Selected goals", strings.Join(report.SelectedGoals, ", "))
+	ui.Row("Profile", report.Profile)
+	ui.Row("Max risk", report.MaxRisk)
+	ui.Row("Directory", report.Directory)
+	ui.StatusRow("Status", report.Status, "controlled automation")
+	ui.Section("Policy Summary")
+	ui.Row("Selected actions", fmt.Sprint(report.PolicySummary.SelectedActions))
+	ui.Row("Skipped actions", fmt.Sprint(report.PolicySummary.SkippedActions))
+	ui.Row("Blocked actions", fmt.Sprint(report.PolicySummary.BlockedActions))
+	ui.Row("Production mutation blocked", fmt.Sprint(report.PolicySummary.ProductionMutationBlocked))
+	for _, approval := range report.PolicySummary.RequiredApprovals {
+		ui.Bullet("Approval", approval)
+	}
+	for _, hint := range report.PolicySummary.RollbackHints {
+		ui.Detail("Rollback hint", hint)
+	}
+	for _, note := range report.PolicySummary.Notes {
+		ui.Detail("Note", note)
+	}
+	if len(report.Actions) > 0 {
+		ui.Section("Actions")
+		for _, action := range report.Actions {
+			ui.Bullet(valueOrDash(action.Category), action.Title)
+			if action.Command != "" {
+				ui.Detail("Command", commandLine(action.Command, action.Args))
+			}
+			if action.Path != "" {
+				ui.Detail("File action", strings.TrimSpace(action.Type+" "+action.Path))
+			}
+			if action.ManualSteps != "" {
+				ui.Detail("Manual", action.ManualSteps)
+			}
+		}
+	}
+	if report.Execution != nil {
+		printExecutionReport(report.Execution)
+		return
+	}
+	ui.NextSteps("Use automation run --dry-run before --yes.", "Production profile remains non-mutating by default.")
 }
 
 func parseProjectDepsArgs(args []string, flags projectFlags) (string, string, string, error) {

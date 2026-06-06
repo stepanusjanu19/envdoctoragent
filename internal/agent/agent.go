@@ -121,11 +121,10 @@ func Run(options Options, execution executor.Options) (*Report, error) {
 		report.Summary = summarize(report)
 		return report, nil
 	}
-	if execution.BaseDir == "" {
+	if report.ProjectPlan != nil && report.ProjectPlan.ExecutionBaseDir != "" {
+		execution.BaseDir = report.ProjectPlan.ExecutionBaseDir
+	} else if execution.BaseDir == "" {
 		execution.BaseDir = report.Directory
-		if report.ProjectPlan != nil && report.ProjectPlan.ExecutionBaseDir != "" {
-			execution.BaseDir = report.ProjectPlan.ExecutionBaseDir
-		}
 	}
 	if execution.Profile == "" && execution.PolicyFile == "" {
 		execution.Profile = report.Profile

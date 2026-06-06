@@ -630,6 +630,45 @@ Behavior:
 
 ---
 
+### Phase 6B — Controlled Automation Finalize
+
+Controlled automation is a deterministic layer above the existing agent and executor contracts. It selects one or more safe agent goals, summarizes policy impact, and routes every runnable action through the same audit/snapshot/allowlist path.
+
+```sh
+envdoctor automation plan [directory]
+envdoctor automation run [directory] --dry-run
+```
+
+Automation goals:
+
+```sh
+--goal diagnose
+--goal onboard
+--goal repair
+--goal scaffold --template react-vite --create-dir
+--goal bootstrap
+--goal maintain
+```
+
+Examples:
+
+```sh
+envdoctor automation plan --json --goal diagnose --profile development
+envdoctor automation plan --json --goal maintain <project-dir>
+envdoctor automation run --dry-run --json --goal repair <project-dir>
+envdoctor automation run --yes --json --profile production --goal scaffold --template go --create-dir <new-dir>
+```
+
+Behavior:
+- `automation plan` never executes actions.
+- `automation run` defaults to dry-run.
+- `--goal maintain` combines diagnose and repair planning, but still only runs action candidates through the executor.
+- The automation policy summary reports selected goals, selected/skipped/blocked actions, required approvals, and rollback hints.
+- Production profile blocks mutating automation by default, including `--yes` runs.
+- AI, remote/cloud mutation, service fix automation, and autonomous production mutation remain future work.
+
+---
+
 ### Phase 5 Integration — IDE CLI Wrappers
 
 The IDE integration preview keeps Envdoctor as the single engine and wraps CLI JSON output:
@@ -673,6 +712,7 @@ envdoctor
     ├── scaffold                 Official-only project scaffold registry and safe generator actions
     ├── terminalui               Shared friendly non-JSON terminal presenter
     ├── agent                    Deterministic local autonomous orchestration preview
+    ├── automation               Controlled automation orchestration over agent/executor
     └── cliui                    Interactive non-mutating CLI UI
 ```
 
@@ -737,6 +777,10 @@ go run ./cmd/envdoctor agent plan --json --goal onboard <fixture-dir>
 go run ./cmd/envdoctor agent plan --json --goal scaffold --template react-vite --create-dir <new-dir>
 go run ./cmd/envdoctor agent run --dry-run --json --goal repair <fixture-dir>
 go run ./cmd/envdoctor agent run --yes --json --profile production --goal scaffold --template go --create-dir <new-dir>
+go run ./cmd/envdoctor automation plan --json --goal diagnose --profile development
+go run ./cmd/envdoctor automation plan --json --goal maintain <fixture-dir>
+go run ./cmd/envdoctor automation run --dry-run --json --goal repair <fixture-dir>
+go run ./cmd/envdoctor automation run --yes --json --profile production --goal scaffold --template go --create-dir <new-dir>
 go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 ```
 
@@ -765,7 +809,8 @@ go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 | **Phase 5E** | ✅ Official Scaffolding Preview | Official-only starter registry with structured generator actions and guarded manifests |
 | **Phase 5F** | ✅ Policy Hardening Preview | Development/production profiles, max-risk policy, policy audit metadata, structured install actions |
 | **Phase 6A** | ✅ Autonomous Agent Preview | Local deterministic agent plan/run over diagnose/onboard/repair/scaffold/bootstrap goals |
-| **Phase 6B+** | 🚧 Future AI / Remote | AI troubleshooting, autonomous auto-fix, service fix automation, multi-agent diagnostics, remote/cloud validation |
+| **Phase 6B** | ✅ Controlled Automation Finalize | Automation plan/run, maintain goal, policy summary, production mutation block |
+| **Phase 6C+** | 🚧 Future AI / Remote | AI troubleshooting, autonomous auto-fix, service fix automation, multi-agent diagnostics, remote/cloud validation |
 
 ---
 

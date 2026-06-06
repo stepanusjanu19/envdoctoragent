@@ -366,8 +366,10 @@ function Invoke-Smoke {
     $agentScaffoldPlanDir = Join-Path $SmokeDir "agent-scaffold-plan"
     $agentScaffoldYesDir = Join-Path $SmokeDir "agent-scaffold-yes"
     $agentProdBlockDir = Join-Path $SmokeDir "agent-prod-block"
+    $automationScaffoldPlanDir = Join-Path $SmokeDir "automation-scaffold-plan"
+    $automationProdBlockDir = Join-Path $SmokeDir "automation-prod-block"
     $dependencyDir = Join-Path $SmokeDir "dependencies"
-    foreach ($path in @($projectEmptyDir, $projectNodeDir, $projectYesDir, $scaffoldReactDir, $scaffoldLaravelDir, $scaffoldGoWebDir, $scaffoldGoDir, $scaffoldPythonDir, $scaffoldConflictDir, $agentScaffoldPlanDir, $agentScaffoldYesDir, $agentProdBlockDir)) {
+    foreach ($path in @($projectEmptyDir, $projectNodeDir, $projectYesDir, $scaffoldReactDir, $scaffoldLaravelDir, $scaffoldGoWebDir, $scaffoldGoDir, $scaffoldPythonDir, $scaffoldConflictDir, $agentScaffoldPlanDir, $agentScaffoldYesDir, $agentProdBlockDir, $automationScaffoldPlanDir, $automationProdBlockDir)) {
         if (Test-Path $path) {
             Remove-Item -Recurse -Force $path
         }
@@ -473,6 +475,7 @@ function Invoke-Smoke {
     $aboutText = Invoke-GoOutput @("run", $Pkg, "about")
     $diagnoseText = Invoke-GoOutput @("run", $Pkg, "diagnose")
     $agentPlanText = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--goal", "diagnose")
+    $automationPlanText = Invoke-GoOutput @("run", $Pkg, "automation", "plan", "--goal", "diagnose")
     $projectTemplatesText = Invoke-GoOutput @("run", $Pkg, "project", "templates")
     $diagnosePlain = Invoke-GoOutput @("run", $Pkg, "--plain", "diagnose")
     if (-not (Test-OutputContains $aboutText "Envdoctor")) {
@@ -483,6 +486,9 @@ function Invoke-Smoke {
     }
     if (-not (Test-OutputContains $agentPlanText "Next steps")) {
         throw "Agent plan output did not contain next steps"
+    }
+    if (-not (Test-OutputContains $automationPlanText "Policy Summary")) {
+        throw "Automation plan output did not contain policy summary"
     }
     if (-not (Test-OutputContains $projectTemplatesText "Project Templates")) {
         throw "Project templates output did not contain friendly title"
@@ -650,6 +656,7 @@ function Invoke-Smoke {
     }
     $agentScaffoldYesAudit = Join-Path $SmokeDir "agent-scaffold-yes-audit.jsonl"
     $agentProdBlockAudit = Join-Path $SmokeDir "agent-prod-block-audit.jsonl"
+    $automationProdBlockAudit = Join-Path $SmokeDir "automation-prod-block-audit.jsonl"
     $agentPlanDiagnose = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--json", "--goal", "diagnose", "--profile", "development")
     $agentPlanOnboard = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--json", "--goal", "onboard", $projectNodeDir)
     $agentPlanScaffold = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--json", "--goal", "scaffold", "--template", "react-vite", "--create-dir", $agentScaffoldPlanDir)
@@ -669,6 +676,25 @@ function Invoke-Smoke {
     if (-not ($agentProdReport.execution.policy_decisions | Where-Object { $_.allowed -eq $false -and $_.reason -eq "production profile blocks mutating apply actions" })) {
         throw "Production agent scaffold did not report mutating policy block"
     }
+    $automationPlanDiagnose = Invoke-GoOutput @("run", $Pkg, "automation", "plan", "--json", "--goal", "diagnose", "--profile", "development")
+    $automationPlanMaintain = Invoke-GoOutput @("run", $Pkg, "automation", "plan", "--json", "--goal", "maintain", $projectNodeDir)
+    $automationMaintainReport = $automationPlanMaintain | ConvertFrom-Json
+    if ($automationMaintainReport.goal -ne "maintain" -or -not (@($automationMaintainReport.selected_goals) -contains "repair")) {
+        throw "Automation maintain plan did not include repair goal"
+    }
+    $automationPlanScaffold = Invoke-GoOutput @("run", $Pkg, "automation", "plan", "--json", "--goal", "scaffold", "--template", "react-vite", "--create-dir", $automationScaffoldPlanDir)
+    $automationRunRepair = Invoke-GoOutput @("run", $Pkg, "automation", "run", "--dry-run", "--json", "--goal", "repair", $projectNodeDir)
+    $automationRunProdBlock = Invoke-GoOutput @("run", $Pkg, "automation", "run", "--yes", "--json", "--profile", "production", "--goal", "scaffold", "--template", "go", "--create-dir", "--audit-log", $automationProdBlockAudit, $automationProdBlockDir)
+    if (Test-Path $automationProdBlockDir) {
+        throw "Production automation scaffold created a project directory despite policy block"
+    }
+    $automationProdReport = $automationRunProdBlock | ConvertFrom-Json
+    if (-not $automationProdReport.policy_summary.production_mutation_blocked) {
+        throw "Production automation scaffold did not report production mutation block"
+    }
+    if (-not ($automationProdReport.execution.policy_decisions | Where-Object { $_.allowed -eq $false })) {
+        throw "Production automation scaffold did not report a policy block"
+    }
     foreach ($auditPath in @($fixApplyAudit, $fixApplyDevAudit, $fixApplyProdAudit, $installApplyAudit, $installApplyProdAudit, $serviceApplyAudit, $serviceApplyProdAudit, $versionApplyAudit, $bootstrapApplyAudit)) {
         if (-not (Test-Path $auditPath) -or (Get-Item $auditPath).Length -eq 0) {
             throw "Apply audit log was not created: $auditPath"
@@ -683,6 +709,9 @@ function Invoke-Smoke {
         if (-not (Test-Path $auditPath) -or (Get-Item $auditPath).Length -eq 0) {
             throw "Agent audit log was not created: $auditPath"
         }
+    }
+    if (-not (Test-Path $automationProdBlockAudit) -or (Get-Item $automationProdBlockAudit).Length -eq 0) {
+        throw "Automation audit log was not created: $automationProdBlockAudit"
     }
     Invoke-GoOutput @("run", $Pkg, "ui", "--script", "diagnose,version:$versionDir,fix:$versionDir,bootstrap:$bootstrapDir,exit") |
         Set-Content -Path (Join-Path $SmokeDir "ui.txt") -Encoding UTF8
@@ -749,6 +778,11 @@ function Invoke-Smoke {
     $agentRunRepair | ConvertFrom-Json | Out-Null
     $agentRunScaffold | ConvertFrom-Json | Out-Null
     $agentRunProdBlock | ConvertFrom-Json | Out-Null
+    $automationPlanDiagnose | ConvertFrom-Json | Out-Null
+    $automationPlanMaintain | ConvertFrom-Json | Out-Null
+    $automationPlanScaffold | ConvertFrom-Json | Out-Null
+    $automationRunRepair | ConvertFrom-Json | Out-Null
+    $automationRunProdBlock | ConvertFrom-Json | Out-Null
 
     Invoke-GoOutput @("run", $Pkg, "dockerize", $nodeDir) |
         Set-Content -Path (Join-Path $SmokeDir "Dockerfile.preview") -Encoding UTF8
