@@ -39,6 +39,37 @@ type DiagnoseReport struct {
 	Recommendations []string    `json:"recommendations"`
 }
 
+// Action describes one service operation candidate. Execution is delegated to
+// the shared executor package by the CLI layer.
+type Action struct {
+	ID            string   `json:"id"`
+	Source        string   `json:"source"`
+	Category      string   `json:"category"`
+	Operation     string   `json:"operation"`
+	Title         string   `json:"title"`
+	Description   string   `json:"description,omitempty"`
+	Command       string   `json:"command,omitempty"`
+	Args          []string `json:"args,omitempty"`
+	ManualSteps   string   `json:"manual_steps,omitempty"`
+	Risk          string   `json:"risk"`
+	RequiresAdmin bool     `json:"requires_admin"`
+	SafeToRun     bool     `json:"safe_to_run"`
+	Timeout       string   `json:"timeout,omitempty"`
+	RollbackHint  string   `json:"rollback_hint,omitempty"`
+	Status        string   `json:"status"`
+}
+
+// PlanReport contains an approval-gated service operation plan.
+type PlanReport struct {
+	Service   string   `json:"service"`
+	Operation string   `json:"operation"`
+	Platform  string   `json:"platform"`
+	Manager   string   `json:"manager"`
+	Status    string   `json:"status"`
+	Actions   []Action `json:"actions"`
+	Summary   string   `json:"summary"`
+}
+
 // ListServices lists services using the native service manager when available.
 func ListServices() (*ListReport, error) {
 	switch runtime.GOOS {
@@ -111,6 +142,53 @@ func Diagnose(name string) (*DiagnoseReport, error) {
 	}, nil
 }
 
+// Plan creates structured service actions for safe dry-run/apply execution.
+func Plan(operation, name string) (*PlanReport, error) {
+	operation, err := normalizeServiceOperation(operation)
+	if err != nil {
+		return nil, err
+	}
+	name, err = validateServiceName(name)
+	if err != nil {
+		return nil, err
+	}
+
+	report := &PlanReport{
+		Service:   name,
+		Operation: operation,
+		Platform:  runtime.GOOS,
+		Status:    "safe-execution-preview",
+	}
+
+	switch runtime.GOOS {
+	case "linux":
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			report.Manager = "systemd"
+			report.Actions = systemdActions(operation, name)
+		} else {
+			report.Manager = "linux-service"
+			report.Actions = []Action{manualServiceAction(operation, name, "No supported Linux service executor was found. Use the native service manager manually after reviewing logs.")}
+		}
+	case "windows":
+		if _, err := exec.LookPath("sc.exe"); err == nil {
+			report.Manager = "windows-service"
+			report.Actions = windowsServiceActions(operation, name)
+		} else {
+			report.Manager = "windows-service"
+			report.Actions = []Action{manualServiceAction(operation, name, "sc.exe was not found. Use Windows Services or PowerShell manually after reviewing logs.")}
+		}
+	case "darwin":
+		report.Manager = "launchd"
+		report.Actions = []Action{manualServiceAction(operation, name, "launchctl requires an explicit service domain. envdoctor keeps macOS service mutation manual in this preview.")}
+	default:
+		report.Manager = "none"
+		report.Actions = []Action{manualServiceAction(operation, name, "Service mutation is not supported on this platform.")}
+	}
+
+	report.Summary = fmt.Sprintf("Generated %d service %s action(s) for %s. Apply still requires executor policy approval.", len(report.Actions), operation, name)
+	return report, nil
+}
+
 func listLinuxServices() *ListReport {
 	if _, err := exec.LookPath("systemctl"); err == nil {
 		out, err := command.CombinedOutput("systemctl", "list-units", "--type=service", "--all", "--no-pager", "--no-legend")
@@ -142,6 +220,123 @@ func listLinuxServices() *ListReport {
 		Status:   "not supported",
 		Message:  "No supported Linux service manager found.",
 	}
+}
+
+func normalizeServiceOperation(operation string) (string, error) {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	switch operation {
+	case "start", "stop", "restart":
+		return operation, nil
+	case "enable", "disable", "delete", "remove", "fix":
+		return "", fmt.Errorf("service operation %q is intentionally blocked; use start, stop, or restart", operation)
+	default:
+		return "", fmt.Errorf("unsupported service operation %q; use start, stop, or restart", operation)
+	}
+}
+
+func validateServiceName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("service name is required")
+	}
+	if strings.ContainsAny(name, `/\*?[]{};|&<>$`+"`") || strings.Contains(name, "..") {
+		return "", fmt.Errorf("unsafe service name %q; wildcards, paths, and shell operators are blocked", name)
+	}
+	if strings.ContainsAny(name, "\n\r\t ") {
+		return "", fmt.Errorf("unsafe service name %q; whitespace is blocked in service operations", name)
+	}
+	return name, nil
+}
+
+func systemdActions(operation, name string) []Action {
+	return []Action{commandServiceAction(operation, name, "systemctl", []string{operation, name})}
+}
+
+func windowsServiceActions(operation, name string) []Action {
+	switch operation {
+	case "restart":
+		return []Action{
+			commandServiceAction("stop", name, "sc.exe", []string{"stop", name}),
+			commandServiceAction("start", name, "sc.exe", []string{"start", name}),
+		}
+	default:
+		return []Action{commandServiceAction(operation, name, "sc.exe", []string{operation, name})}
+	}
+}
+
+func commandServiceAction(operation, name, commandName string, args []string) Action {
+	return Action{
+		ID:            fmt.Sprintf("service-%s-%s", operation, serviceSlug(name)),
+		Source:        "service",
+		Category:      "Service",
+		Operation:     operation,
+		Title:         fmt.Sprintf("%s service %s", titleOperation(operation), name),
+		Description:   "Structured service operation generated by envdoctor. Execution requires --yes and policy approval.",
+		Command:       commandName,
+		Args:          args,
+		Risk:          "high",
+		RequiresAdmin: true,
+		SafeToRun:     true,
+		Timeout:       "2m",
+		RollbackHint:  serviceRollbackHint(operation, name),
+		Status:        "safe-execution-preview",
+	}
+}
+
+func manualServiceAction(operation, name, steps string) Action {
+	return Action{
+		ID:            fmt.Sprintf("service-%s-%s-manual", operation, serviceSlug(name)),
+		Source:        "service",
+		Category:      "Service",
+		Operation:     operation,
+		Title:         fmt.Sprintf("Review service %s for %s", name, operation),
+		ManualSteps:   steps,
+		Risk:          "high",
+		RequiresAdmin: true,
+		SafeToRun:     false,
+		Timeout:       "2m",
+		RollbackHint:  serviceRollbackHint(operation, name),
+		Status:        "manual",
+	}
+}
+
+func serviceRollbackHint(operation, name string) string {
+	switch operation {
+	case "start":
+		return "If the start causes issues, stop the service again after collecting logs: " + name
+	case "stop":
+		return "If the stop causes issues, start the service again after collecting logs: " + name
+	case "restart":
+		return "If restart causes issues, inspect service status and logs before further changes: " + name
+	default:
+		return "Inspect service status and logs before further changes: " + name
+	}
+}
+
+func serviceSlug(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+			continue
+		}
+		if builder.Len() > 0 {
+			builder.WriteByte('-')
+		}
+	}
+	result := strings.Trim(builder.String(), "-")
+	if result == "" {
+		return "service"
+	}
+	return result
+}
+
+func titleOperation(operation string) string {
+	if operation == "" {
+		return "Service"
+	}
+	return strings.ToUpper(operation[:1]) + operation[1:]
 }
 
 func linuxServiceStatus(name string) *ServiceInfo {

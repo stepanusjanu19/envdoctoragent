@@ -251,13 +251,20 @@ function Invoke-Smoke {
     $projectEmptyDir = Join-Path $SmokeDir "project-empty"
     $projectNodeDir = Join-Path $SmokeDir "project-node"
     $projectYesDir = Join-Path $SmokeDir "project-yes"
+    $scaffoldReactDir = Join-Path $SmokeDir "scaffold-react"
+    $scaffoldGoDir = Join-Path $SmokeDir "scaffold-go"
+    $scaffoldPythonDir = Join-Path $SmokeDir "scaffold-python"
+    $scaffoldConflictDir = Join-Path $SmokeDir "scaffold-conflict"
+    $agentScaffoldPlanDir = Join-Path $SmokeDir "agent-scaffold-plan"
+    $agentScaffoldYesDir = Join-Path $SmokeDir "agent-scaffold-yes"
+    $agentProdBlockDir = Join-Path $SmokeDir "agent-prod-block"
     $dependencyDir = Join-Path $SmokeDir "dependencies"
-    foreach ($path in @($projectEmptyDir, $projectNodeDir, $projectYesDir)) {
+    foreach ($path in @($projectEmptyDir, $projectNodeDir, $projectYesDir, $scaffoldReactDir, $scaffoldGoDir, $scaffoldPythonDir, $scaffoldConflictDir, $agentScaffoldPlanDir, $agentScaffoldYesDir, $agentProdBlockDir)) {
         if (Test-Path $path) {
             Remove-Item -Recurse -Force $path
         }
     }
-    New-Item -ItemType Directory -Force -Path $nodeDir, $goDir, $versionDir, $bootstrapDir, $projectEmptyDir, $projectNodeDir, $projectYesDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $nodeDir, $goDir, $versionDir, $bootstrapDir, $projectEmptyDir, $projectNodeDir, $projectYesDir, $scaffoldReactDir, $scaffoldGoDir, $scaffoldConflictDir | Out-Null
     @(
         "python", "node", "go", "rust", "php",
         "maven", "gradle", "dotnet", "nuget-config", "nuget-props",
@@ -368,17 +375,64 @@ function Invoke-Smoke {
     Invoke-Go @("run", $Pkg, "service", "list") | Out-Null
     Invoke-Go @("run", $Pkg, "service", "status", "envdoctor-smoke-missing") | Out-Null
     $service = Invoke-GoOutput @("run", $Pkg, "service", "diagnose", "--json", "envdoctor-smoke-missing")
+    $servicePlan = Invoke-GoOutput @("run", $Pkg, "service", "plan", "restart", "envdoctor-smoke-missing", "--json")
+    $serviceApplyAudit = Join-Path $SmokeDir "service-apply-audit.jsonl"
+    $serviceApplyProdAudit = Join-Path $SmokeDir "service-apply-prod-audit.jsonl"
+    $serviceApply = Invoke-GoOutput @("run", $Pkg, "service", "apply", "restart", "envdoctor-smoke-missing", "--dry-run", "--json", "--audit-log", $serviceApplyAudit)
+    $serviceApplyProd = Invoke-GoOutput @("run", $Pkg, "service", "apply", "restart", "envdoctor-smoke-missing", "--yes", "--json", "--profile", "production", "--audit-log", $serviceApplyProdAudit)
+    if (($serviceApplyProd | ConvertFrom-Json).profile -ne "production") {
+        throw "Production service apply did not report production profile"
+    }
+    if (-not (($serviceApplyProd | ConvertFrom-Json).policy_decisions | Where-Object { $_.allowed -eq $false })) {
+        throw "Production service apply did not report a policy block"
+    }
     $versionScan = Invoke-GoOutput @("run", $Pkg, "version", "scan", "--json", $versionDir)
     $versionPlan = Invoke-GoOutput @("run", $Pkg, "version", "plan", "--json", $versionDir)
     $installPlan = Invoke-GoOutput @("run", $Pkg, "install", "plan", "python", "--json")
     $fixPlan = Invoke-GoOutput @("run", $Pkg, "fix", "plan", "--json", $versionDir)
     $bootstrapPlan = Invoke-GoOutput @("run", $Pkg, "bootstrap", "plan", "--json", $bootstrapDir)
     $projectScan = Invoke-GoOutput @("run", $Pkg, "project", "scan", "--json", $projectNodeDir)
+    $projectTemplates = Invoke-GoOutput @("run", $Pkg, "project", "templates", "--json")
     $projectInitPlan = Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "node", "--json", $projectEmptyDir)
+    $scaffoldReactPlan = Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "react-vite", "--json", $scaffoldReactDir)
     $projectInitApplyAudit = Join-Path $SmokeDir "project-init-apply-audit.jsonl"
     $projectDepsApplyAudit = Join-Path $SmokeDir "project-deps-apply-audit.jsonl"
     $projectInitYesAudit = Join-Path $SmokeDir "project-init-yes-audit.jsonl"
     $projectInitApply = Invoke-GoOutput @("run", $Pkg, "project", "init", "apply", "go", "--dry-run", "--json", "--audit-log", $projectInitApplyAudit, $projectEmptyDir)
+    $beforeScaffoldCount = (Get-ChildItem -Force -Path $scaffoldGoDir | Measure-Object).Count
+    $scaffoldGoDryRun = Invoke-GoOutput @("run", $Pkg, "project", "init", "apply", "go-web", "--dry-run", "--json", $scaffoldGoDir)
+    $afterScaffoldCount = (Get-ChildItem -Force -Path $scaffoldGoDir | Measure-Object).Count
+    if ($beforeScaffoldCount -ne $afterScaffoldCount) {
+        throw "Project scaffold dry-run created files"
+    }
+    $scaffoldPythonAudit = Join-Path $SmokeDir "scaffold-python-audit.jsonl"
+    $scaffoldPythonApply = Invoke-GoOutput @("run", $Pkg, "project", "init", "apply", "python-cli", "--yes", "--json", "--create-dir", "--audit-log", $scaffoldPythonAudit, $scaffoldPythonDir)
+    if (-not (Test-Path (Join-Path $scaffoldPythonDir "pyproject.toml"))) {
+        throw "Python scaffold pyproject.toml was not created"
+    }
+    if (-not (Test-Path (Join-Path $scaffoldPythonDir "src/scaffold_python/__main__.py"))) {
+        throw "Python scaffold entrypoint was not created"
+    }
+    if (-not (($scaffoldPythonApply | ConvertFrom-Json).project_snapshot_file)) {
+        throw "Python scaffold --yes did not report a project snapshot"
+    }
+    "module example.com/conflict" | Set-Content -Path (Join-Path $scaffoldConflictDir "go.mod") -Encoding UTF8
+    try {
+        Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "go-web", "--allow-non-empty", $scaffoldConflictDir) | Out-Null
+        throw "Project scaffold unexpectedly allowed overwrite without --force"
+    } catch {
+        if ($_.Exception.Message -eq "Project scaffold unexpectedly allowed overwrite without --force") {
+            throw
+        }
+    }
+    try {
+        Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "../x", "--json", $scaffoldReactDir) | Out-Null
+        throw "Project scaffold unexpectedly allowed path traversal template id"
+    } catch {
+        if ($_.Exception.Message -eq "Project scaffold unexpectedly allowed path traversal template id") {
+            throw
+        }
+    }
     $projectDepsSync = Invoke-GoOutput @("run", $Pkg, "project", "deps", "plan", "sync", "--json", $projectNodeDir)
     $projectDepsInstall = Invoke-GoOutput @("run", $Pkg, "project", "deps", "plan", "install", "lodash", "--ecosystem", "node", "--json", $projectNodeDir)
     $projectDepsUpdate = Invoke-GoOutput @("run", $Pkg, "project", "deps", "plan", "update", "lodash", "--ecosystem", "node", "--json", $projectNodeDir)
@@ -411,14 +465,50 @@ function Invoke-Smoke {
         }
     }
     $fixApplyAudit = Join-Path $SmokeDir "fix-apply-audit.jsonl"
+    $fixApplyDevAudit = Join-Path $SmokeDir "fix-apply-dev-audit.jsonl"
+    $fixApplyProdAudit = Join-Path $SmokeDir "fix-apply-prod-audit.jsonl"
     $installApplyAudit = Join-Path $SmokeDir "install-apply-audit.jsonl"
+    $installApplyProdAudit = Join-Path $SmokeDir "install-apply-prod-audit.jsonl"
     $versionApplyAudit = Join-Path $SmokeDir "version-apply-audit.jsonl"
     $bootstrapApplyAudit = Join-Path $SmokeDir "bootstrap-apply-audit.jsonl"
     $fixApply = Invoke-GoOutput @("run", $Pkg, "fix", "apply", "--dry-run", "--json", "--audit-log", $fixApplyAudit, $versionDir)
+    $fixApplyDev = Invoke-GoOutput @("run", $Pkg, "fix", "apply", "--dry-run", "--json", "--profile", "development", "--audit-log", $fixApplyDevAudit, $versionDir)
+    $fixApplyProd = Invoke-GoOutput @("run", $Pkg, "fix", "apply", "--dry-run", "--json", "--profile", "production", "--audit-log", $fixApplyProdAudit, $versionDir)
     $installApply = Invoke-GoOutput @("run", $Pkg, "install", "apply", "python", "--dry-run", "--json", "--audit-log", $installApplyAudit)
+    $installApplyProd = Invoke-GoOutput @("run", $Pkg, "install", "apply", "python", "--dry-run", "--json", "--profile", "production", "--audit-log", $installApplyProdAudit)
     $versionApply = Invoke-GoOutput @("run", $Pkg, "version", "apply", "--dry-run", "--json", "--audit-log", $versionApplyAudit, $versionDir)
     $bootstrapApply = Invoke-GoOutput @("run", $Pkg, "bootstrap", "apply", "--dry-run", "--json", "--audit-log", $bootstrapApplyAudit, $bootstrapDir)
-    foreach ($auditPath in @($fixApplyAudit, $installApplyAudit, $versionApplyAudit, $bootstrapApplyAudit)) {
+    if (($fixApplyProd | ConvertFrom-Json).profile -ne "production") {
+        throw "Production fix apply did not report production profile"
+    }
+    if (($installApplyProd | ConvertFrom-Json).profile -ne "production") {
+        throw "Production install apply did not report production profile"
+    }
+    $agentScaffoldYesAudit = Join-Path $SmokeDir "agent-scaffold-yes-audit.jsonl"
+    $agentProdBlockAudit = Join-Path $SmokeDir "agent-prod-block-audit.jsonl"
+    $agentPlanDiagnose = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--json", "--goal", "diagnose", "--profile", "development")
+    $agentPlanOnboard = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--json", "--goal", "onboard", $projectNodeDir)
+    $agentPlanScaffold = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--json", "--goal", "scaffold", "--template", "go-web", "--create-dir", $agentScaffoldPlanDir)
+    $agentRunRepair = Invoke-GoOutput @("run", $Pkg, "agent", "run", "--dry-run", "--json", "--goal", "repair", $projectNodeDir)
+    $agentRunScaffold = Invoke-GoOutput @("run", $Pkg, "agent", "run", "--yes", "--json", "--goal", "scaffold", "--template", "python-cli", "--create-dir", "--audit-log", $agentScaffoldYesAudit, $agentScaffoldYesDir)
+    if (-not (Test-Path (Join-Path $agentScaffoldYesDir "pyproject.toml"))) {
+        throw "Agent scaffold pyproject.toml was not created"
+    }
+    if (-not (Test-Path (Join-Path $agentScaffoldYesDir "src/agent_scaffold_yes/__main__.py"))) {
+        throw "Agent scaffold entrypoint was not created"
+    }
+    if (-not (($agentRunScaffold | ConvertFrom-Json).execution.project_snapshot_file)) {
+        throw "Agent scaffold --yes did not report a project snapshot"
+    }
+    $agentRunProdBlock = Invoke-GoOutput @("run", $Pkg, "agent", "run", "--yes", "--json", "--profile", "production", "--goal", "scaffold", "--template", "python-cli", "--create-dir", "--audit-log", $agentProdBlockAudit, $agentProdBlockDir)
+    if (Test-Path $agentProdBlockDir) {
+        throw "Production agent scaffold created a project directory despite policy block"
+    }
+    $agentProdReport = $agentRunProdBlock | ConvertFrom-Json
+    if (-not ($agentProdReport.execution.policy_decisions | Where-Object { $_.allowed -eq $false -and $_.reason -eq "production profile blocks mutating apply actions" })) {
+        throw "Production agent scaffold did not report mutating policy block"
+    }
+    foreach ($auditPath in @($fixApplyAudit, $fixApplyDevAudit, $fixApplyProdAudit, $installApplyAudit, $installApplyProdAudit, $serviceApplyAudit, $serviceApplyProdAudit, $versionApplyAudit, $bootstrapApplyAudit)) {
         if (-not (Test-Path $auditPath) -or (Get-Item $auditPath).Length -eq 0) {
             throw "Apply audit log was not created: $auditPath"
         }
@@ -426,6 +516,14 @@ function Invoke-Smoke {
     foreach ($auditPath in @($projectInitApplyAudit, $projectDepsApplyAudit, $projectInitYesAudit)) {
         if (-not (Test-Path $auditPath) -or (Get-Item $auditPath).Length -eq 0) {
             throw "Project audit log was not created: $auditPath"
+        }
+    }
+    if (-not (Test-Path $scaffoldPythonAudit) -or (Get-Item $scaffoldPythonAudit).Length -eq 0) {
+        throw "Scaffold audit log was not created: $scaffoldPythonAudit"
+    }
+    foreach ($auditPath in @($agentScaffoldYesAudit, $agentProdBlockAudit)) {
+        if (-not (Test-Path $auditPath) -or (Get-Item $auditPath).Length -eq 0) {
+            throw "Agent audit log was not created: $auditPath"
         }
     }
     Invoke-GoOutput @("run", $Pkg, "ui", "--script", "diagnose,version:$versionDir,fix:$versionDir,bootstrap:$bootstrapDir,exit") |
@@ -437,6 +535,17 @@ function Invoke-Smoke {
     if ($uiOutput -match "(?i)executed|installed|restarted|fixed") {
         throw "UI smoke output contains mutating action wording"
     }
+    Get-Content -Raw -Path (Join-Path $Root "integrations/vscode/package.json") | ConvertFrom-Json | Out-Null
+    if (-not (Test-Path (Join-Path $Root "integrations/vscode/extension.js"))) {
+        throw "VSCode wrapper extension.js was not found"
+    }
+    if (-not (Test-Path (Join-Path $Root "integrations/jetbrains/README.md"))) {
+        throw "JetBrains integration README was not found"
+    }
+    $jetbrainsTools = Join-Path $Root "integrations/jetbrains/external-tools.xml"
+    if (-not (Test-Path $jetbrainsTools) -or (Get-Content -Raw -Path $jetbrainsTools) -notmatch "Envdoctor Agent Plan JSON") {
+        throw "JetBrains external tools template is missing"
+    }
     $system | ConvertFrom-Json | Out-Null
     $toolchain | ConvertFrom-Json | Out-Null
     $path | ConvertFrom-Json | Out-Null
@@ -447,14 +556,21 @@ function Invoke-Smoke {
     $explain | ConvertFrom-Json | Out-Null
     $recommend | ConvertFrom-Json | Out-Null
     $service | ConvertFrom-Json | Out-Null
+    $servicePlan | ConvertFrom-Json | Out-Null
+    $serviceApply | ConvertFrom-Json | Out-Null
+    $serviceApplyProd | ConvertFrom-Json | Out-Null
     $versionScan | ConvertFrom-Json | Out-Null
     $versionPlan | ConvertFrom-Json | Out-Null
     $installPlan | ConvertFrom-Json | Out-Null
     $fixPlan | ConvertFrom-Json | Out-Null
     $bootstrapPlan | ConvertFrom-Json | Out-Null
     $projectScan | ConvertFrom-Json | Out-Null
+    $projectTemplates | ConvertFrom-Json | Out-Null
     $projectInitPlan | ConvertFrom-Json | Out-Null
+    $scaffoldReactPlan | ConvertFrom-Json | Out-Null
     $projectInitApply | ConvertFrom-Json | Out-Null
+    $scaffoldGoDryRun | ConvertFrom-Json | Out-Null
+    $scaffoldPythonApply | ConvertFrom-Json | Out-Null
     $projectDepsSync | ConvertFrom-Json | Out-Null
     $projectDepsInstall | ConvertFrom-Json | Out-Null
     $projectDepsUpdate | ConvertFrom-Json | Out-Null
@@ -462,9 +578,18 @@ function Invoke-Smoke {
     $projectDepsApply | ConvertFrom-Json | Out-Null
     $projectInitYes | ConvertFrom-Json | Out-Null
     $fixApply | ConvertFrom-Json | Out-Null
+    $fixApplyDev | ConvertFrom-Json | Out-Null
+    $fixApplyProd | ConvertFrom-Json | Out-Null
     $installApply | ConvertFrom-Json | Out-Null
+    $installApplyProd | ConvertFrom-Json | Out-Null
     $versionApply | ConvertFrom-Json | Out-Null
     $bootstrapApply | ConvertFrom-Json | Out-Null
+    $agentPlanDiagnose | ConvertFrom-Json | Out-Null
+    $agentPlanOnboard | ConvertFrom-Json | Out-Null
+    $agentPlanScaffold | ConvertFrom-Json | Out-Null
+    $agentRunRepair | ConvertFrom-Json | Out-Null
+    $agentRunScaffold | ConvertFrom-Json | Out-Null
+    $agentRunProdBlock | ConvertFrom-Json | Out-Null
 
     Invoke-GoOutput @("run", $Pkg, "dockerize", $nodeDir) |
         Set-Content -Path (Join-Path $SmokeDir "Dockerfile.preview") -Encoding UTF8

@@ -85,8 +85,8 @@ func Generate(tool string) *Plan {
 		return &Plan{Tool: tool, Action: action, Summary: "Tool is not mapped for this package manager"}
 	}
 
-	action.Command = installCommand(manager.Name, action.Package)
-	action.ManualSteps = "Review the command before running it. envdoctor does not execute install commands in this phase."
+	action.Command, action.Args = installCommand(manager.Name, action.Package)
+	action.ManualSteps = "Review the structured command before running it. envdoctor apply commands still require --yes and profile policy approval."
 	action.RequiresAdmin = manager.Name != "brew"
 
 	return &Plan{
@@ -119,26 +119,27 @@ func detectPackageManager() managerDef {
 	return managerDef{}
 }
 
-func installCommand(manager, pkg string) string {
+func installCommand(manager, pkg string) (string, []string) {
+	packages := strings.Fields(pkg)
 	switch manager {
 	case "apt":
-		return fmt.Sprintf("sudo apt-get update && sudo apt-get install -y %s", pkg)
+		return "apt-get", append([]string{"install", "-y"}, packages...)
 	case "dnf":
-		return fmt.Sprintf("sudo dnf install -y %s", pkg)
+		return "dnf", append([]string{"install", "-y"}, packages...)
 	case "yum":
-		return fmt.Sprintf("sudo yum install -y %s", pkg)
+		return "yum", append([]string{"install", "-y"}, packages...)
 	case "pacman":
-		return fmt.Sprintf("sudo pacman -S --needed %s", pkg)
+		return "pacman", append([]string{"-S", "--needed"}, packages...)
 	case "zypper":
-		return fmt.Sprintf("sudo zypper install -y %s", pkg)
+		return "zypper", append([]string{"install", "-y"}, packages...)
 	case "brew":
-		return fmt.Sprintf("brew install %s", pkg)
+		return "brew", append([]string{"install"}, packages...)
 	case "winget":
-		return fmt.Sprintf("winget install --id %s", pkg)
+		return "winget", []string{"install", "--id", pkg}
 	case "choco":
-		return fmt.Sprintf("choco install %s -y", pkg)
+		return "choco", []string{"install", pkg, "-y"}
 	default:
-		return ""
+		return "", nil
 	}
 }
 

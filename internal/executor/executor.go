@@ -19,6 +19,7 @@ import (
 	"github.com/stepanusjanu19/envdoctoragent/internal/bootstrap"
 	"github.com/stepanusjanu19/envdoctoragent/internal/fixplan"
 	"github.com/stepanusjanu19/envdoctoragent/internal/installplan"
+	"github.com/stepanusjanu19/envdoctoragent/internal/service"
 	"github.com/stepanusjanu19/envdoctoragent/internal/snapshot"
 	"github.com/stepanusjanu19/envdoctoragent/internal/version"
 )
@@ -26,11 +27,19 @@ import (
 const (
 	DefaultTimeout = 2 * time.Minute
 	previewLimit   = 4096
+
+	ProfileDevelopment = "development"
+	ProfileProduction  = "production"
+
+	RiskLow    = "low"
+	RiskMedium = "medium"
+	RiskHigh   = "high"
 )
 
 // Action is the normalized execution contract used by approval-gated apply commands.
 type Action struct {
 	ID               string   `json:"id"`
+	Type             string   `json:"type,omitempty"`
 	Source           string   `json:"source"`
 	Category         string   `json:"category"`
 	Operation        string   `json:"operation,omitempty"`
@@ -43,6 +52,10 @@ type Action struct {
 	Args             []string `json:"args,omitempty"`
 	SuggestedCommand string   `json:"suggested_command,omitempty"`
 	ManualSteps      string   `json:"manual_steps,omitempty"`
+	Path             string   `json:"path,omitempty"`
+	Content          string   `json:"-"`
+	ContentBytes     int      `json:"content_bytes,omitempty"`
+	Overwrite        bool     `json:"overwrite,omitempty"`
 	WorkingDir       string   `json:"working_dir,omitempty"`
 	Risk             string   `json:"risk"`
 	RequiresAdmin    bool     `json:"requires_admin"`
@@ -56,12 +69,15 @@ type Action struct {
 
 // Options configures one apply run.
 type Options struct {
-	DryRun   bool
-	Approved bool
-	BaseDir  string
-	AuditLog string
-	Timeout  time.Duration
-	Now      time.Time
+	DryRun     bool
+	Approved   bool
+	BaseDir    string
+	AuditLog   string
+	Timeout    time.Duration
+	Now        time.Time
+	Profile    string
+	MaxRisk    string
+	PolicyFile string
 }
 
 // Result describes one action execution or dry-run decision.
@@ -78,26 +94,57 @@ type Result struct {
 
 // Report is the JSON/text output for apply commands.
 type Report struct {
-	Mode                string    `json:"mode"`
-	Platform            string    `json:"platform"`
-	WorkingDir          string    `json:"working_dir"`
-	AuditLog            string    `json:"audit_log"`
-	SnapshotFile        string    `json:"snapshot_file,omitempty"`
-	ProjectSnapshotFile string    `json:"project_snapshot_file,omitempty"`
-	ProjectChanges      []string  `json:"project_changes,omitempty"`
-	Results             []Result  `json:"results"`
-	Summary             string    `json:"summary"`
-	StartedAt           time.Time `json:"started_at"`
-	FinishedAt          time.Time `json:"finished_at"`
+	Mode                string           `json:"mode"`
+	Platform            string           `json:"platform"`
+	Profile             string           `json:"profile"`
+	MaxRisk             string           `json:"max_risk"`
+	PolicyFile          string           `json:"policy_file,omitempty"`
+	WorkingDir          string           `json:"working_dir"`
+	AuditLog            string           `json:"audit_log"`
+	SnapshotFile        string           `json:"snapshot_file,omitempty"`
+	ProjectSnapshotFile string           `json:"project_snapshot_file,omitempty"`
+	ProjectChanges      []string         `json:"project_changes,omitempty"`
+	PolicyDecisions     []PolicyDecision `json:"policy_decisions,omitempty"`
+	Results             []Result         `json:"results"`
+	Summary             string           `json:"summary"`
+	StartedAt           time.Time        `json:"started_at"`
+	FinishedAt          time.Time        `json:"finished_at"`
+}
+
+// PolicyDecision records why an action is selected or blocked before execution.
+type PolicyDecision struct {
+	ActionID string `json:"action_id"`
+	Profile  string `json:"profile"`
+	MaxRisk  string `json:"max_risk"`
+	Risk     string `json:"risk"`
+	Mutating bool   `json:"mutating"`
+	Allowed  bool   `json:"allowed"`
+	Decision string `json:"decision"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 type auditRecord struct {
-	Timestamp time.Time `json:"timestamp"`
-	Type      string    `json:"type"`
-	Mode      string    `json:"mode"`
-	ActionID  string    `json:"action_id,omitempty"`
-	Result    *Result   `json:"result,omitempty"`
-	Message   string    `json:"message,omitempty"`
+	Timestamp time.Time       `json:"timestamp"`
+	Type      string          `json:"type"`
+	Mode      string          `json:"mode"`
+	Profile   string          `json:"profile,omitempty"`
+	ActionID  string          `json:"action_id,omitempty"`
+	Policy    *PolicyDecision `json:"policy,omitempty"`
+	Result    *Result         `json:"result,omitempty"`
+	Message   string          `json:"message,omitempty"`
+}
+
+type policyFileConfig struct {
+	Profile                 string `json:"profile"`
+	MaxRisk                 string `json:"max_risk"`
+	AllowProductionMutation bool   `json:"allow_production_mutation"`
+}
+
+type resolvedPolicy struct {
+	Profile                 string
+	MaxRisk                 string
+	PolicyFile              string
+	AllowProductionMutation bool
 }
 
 type projectFileInfo struct {
@@ -137,6 +184,10 @@ func Execute(actions []Action, options Options) (*Report, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	policy, err := resolvePolicy(options)
+	if err != nil {
+		return nil, err
+	}
 
 	baseDir, err := baseDirectory(options.BaseDir)
 	if err != nil {
@@ -168,48 +219,67 @@ func Execute(actions []Action, options Options) (*Report, error) {
 	report := &Report{
 		Mode:       mode,
 		Platform:   runtime.GOOS,
+		Profile:    policy.Profile,
+		MaxRisk:    policy.MaxRisk,
+		PolicyFile: policy.PolicyFile,
 		WorkingDir: baseDir,
 		AuditLog:   auditPath,
 		Results:    []Result{},
 		StartedAt:  started,
 	}
 
-	writeAudit(auditFile, auditRecord{Timestamp: started, Type: "session_start", Mode: mode, Message: fmt.Sprintf("received %d actions", len(actions))})
+	normalizedActions := make([]Action, 0, len(actions))
+	decisions := make([]PolicyDecision, 0, len(actions))
+	for i, action := range actions {
+		normalized := normalizeAction(action, i, baseDir, timeout)
+		decision := evaluatePolicy(normalized, mode, policy)
+		normalizedActions = append(normalizedActions, normalized)
+		decisions = append(decisions, decision)
+		report.PolicyDecisions = append(report.PolicyDecisions, decision)
+	}
 
-	if mode == "apply" {
+	writeAudit(auditFile, auditRecord{Timestamp: started, Type: "session_start", Mode: mode, Profile: policy.Profile, Message: fmt.Sprintf("received %d actions", len(actions))})
+	for _, decision := range decisions {
+		decisionCopy := decision
+		writeAudit(auditFile, auditRecord{Timestamp: time.Now(), Type: "policy_decision", Mode: mode, Profile: policy.Profile, ActionID: decision.ActionID, Policy: &decisionCopy})
+	}
+
+	if mode == "apply" && hasAllowedMutation(normalizedActions, decisions) {
 		snapshotFile, err := createPreApplySnapshot(baseDir, started)
 		if err != nil {
 			return nil, err
 		}
 		report.SnapshotFile = snapshotFile
-		writeAudit(auditFile, auditRecord{Timestamp: time.Now(), Type: "snapshot", Mode: mode, Message: snapshotFile})
+		writeAudit(auditFile, auditRecord{Timestamp: time.Now(), Type: "snapshot", Mode: mode, Profile: policy.Profile, Message: snapshotFile})
 	}
 
 	var projectBefore map[string]projectFileInfo
-	if mode == "apply" && hasProjectMutation(actions) {
+	if mode == "apply" && hasAllowedProjectMutation(normalizedActions, decisions) {
 		projectBefore = collectProjectState(baseDir)
 		projectSnapshotFile, err := saveProjectSnapshot(baseDir, started, projectBefore)
 		if err != nil {
 			return nil, err
 		}
 		report.ProjectSnapshotFile = projectSnapshotFile
-		writeAudit(auditFile, auditRecord{Timestamp: time.Now(), Type: "project_snapshot", Mode: mode, Message: projectSnapshotFile})
+		writeAudit(auditFile, auditRecord{Timestamp: time.Now(), Type: "project_snapshot", Mode: mode, Profile: policy.Profile, Message: projectSnapshotFile})
 	}
 
-	for i, action := range actions {
-		normalized := normalizeAction(action, i, baseDir, timeout)
-		result := executeOne(normalized, mode, timeout)
+	for i, normalized := range normalizedActions {
+		result := policyBlockedResult(normalized, decisions[i])
+		if decisions[i].Allowed {
+			result = executeOne(normalized, mode, timeout)
+		}
 		report.Results = append(report.Results, result)
-		writeAudit(auditFile, auditRecord{Timestamp: time.Now(), Type: "action_result", Mode: mode, ActionID: result.Action.ID, Result: &result})
+		writeAudit(auditFile, auditRecord{Timestamp: time.Now(), Type: "action_result", Mode: mode, Profile: policy.Profile, ActionID: result.Action.ID, Result: &result})
 	}
 
-	if mode == "apply" && hasProjectMutation(actions) {
+	if mode == "apply" && hasAllowedProjectMutation(normalizedActions, decisions) {
 		report.ProjectChanges = diffProjectStates(projectBefore, collectProjectState(baseDir))
 	}
 
 	report.FinishedAt = time.Now()
 	report.Summary = summarize(report)
-	writeAudit(auditFile, auditRecord{Timestamp: report.FinishedAt, Type: "session_finish", Mode: mode, Message: report.Summary})
+	writeAudit(auditFile, auditRecord{Timestamp: report.FinishedAt, Type: "session_finish", Mode: mode, Profile: policy.Profile, Message: report.Summary})
 	return report, nil
 }
 
@@ -241,7 +311,7 @@ func FromInstallPlan(plan *installplan.Plan, baseDir string) []Action {
 	return []Action{{
 		ID: action.ID, Source: valueOrDefault(action.Source, "installplan"), Category: "Install",
 		Operation: action.Operation, Ecosystem: action.Ecosystem, PackageManager: action.PackageManager, Packages: action.Packages,
-		Title: fmt.Sprintf("Install %s", action.Tool), SuggestedCommand: action.Command, ManualSteps: action.ManualSteps,
+		Title: fmt.Sprintf("Install %s", action.Tool), Command: action.Command, Args: action.Args, ManualSteps: action.ManualSteps,
 		WorkingDir: valueOrDefault(action.WorkingDir, baseDir), Risk: valueOrDefault(action.Risk, "medium"),
 		RequiresAdmin: action.RequiresAdmin, SafeToRun: action.SafeToRun, MutatesProject: action.MutatesProject,
 		CreatesProject: action.CreatesProject, Timeout: action.Timeout, RollbackHint: action.RollbackHint, Status: action.Status,
@@ -296,7 +366,34 @@ func FromBootstrapPlan(plan *bootstrap.Plan, baseDir string) []Action {
 	return actions
 }
 
+// FromServicePlan converts service operation plans into executor actions.
+func FromServicePlan(plan *service.PlanReport, baseDir string) []Action {
+	if plan == nil {
+		return nil
+	}
+	actions := make([]Action, 0, len(plan.Actions))
+	for _, action := range plan.Actions {
+		actions = append(actions, Action{
+			ID: action.ID, Source: valueOrDefault(action.Source, "service"), Category: action.Category,
+			Operation: action.Operation, Title: action.Title, Description: action.Description,
+			Command: action.Command, Args: action.Args, ManualSteps: action.ManualSteps,
+			WorkingDir: baseDir, Risk: valueOrDefault(action.Risk, "high"), RequiresAdmin: action.RequiresAdmin,
+			SafeToRun: action.SafeToRun, Timeout: action.Timeout, RollbackHint: action.RollbackHint,
+			Status: action.Status,
+		})
+	}
+	return actions
+}
+
 func executeOne(action Action, mode string, timeout time.Duration) Result {
+	switch action.Type {
+	case "manual":
+		action.Status = "skipped"
+		return Result{Action: action, Status: "skipped", Message: "manual-only action; no command to execute"}
+	case "mkdir", "write_file":
+		return executeFileAction(action, mode)
+	}
+
 	if action.SuggestedCommand == "" && action.Command == "" {
 		action.Status = "skipped"
 		return Result{Action: action, Status: "skipped", Message: "manual-only action; no command to execute"}
@@ -357,6 +454,16 @@ func normalizeAction(action Action, index int, baseDir string, timeout time.Dura
 	if action.ID == "" {
 		action.ID = fmt.Sprintf("action-%03d-%s", index+1, slug(action.Category+"-"+action.Title))
 	}
+	if action.Type == "" {
+		switch {
+		case action.Path != "":
+			action.Type = "write_file"
+		case action.Command != "" || action.SuggestedCommand != "":
+			action.Type = "command"
+		default:
+			action.Type = "manual"
+		}
+	}
 	if action.Source == "" {
 		action.Source = "executor"
 	}
@@ -375,6 +482,9 @@ func normalizeAction(action Action, index int, baseDir string, timeout time.Dura
 	if action.Timeout == "" {
 		action.Timeout = timeout.String()
 	}
+	if action.Content != "" && action.ContentBytes == 0 {
+		action.ContentBytes = len([]byte(action.Content))
+	}
 	if action.RollbackHint == "" && (action.Command != "" || action.SuggestedCommand != "") {
 		action.RollbackHint = rollbackHint(action.Category)
 	}
@@ -382,6 +492,216 @@ func normalizeAction(action Action, index int, baseDir string, timeout time.Dura
 		action.Status = "pending"
 	}
 	return action
+}
+
+func executeFileAction(action Action, mode string) Result {
+	if err := validateFileAction(action); err != nil {
+		action.Status = "blocked"
+		return Result{Action: action, Status: "blocked", Error: err.Error()}
+	}
+	if mode == "dry-run" {
+		action.Status = "dry-run"
+		return Result{Action: action, Status: "dry-run", Message: "file action validated but not executed; pass --yes to apply"}
+	}
+
+	started := time.Now()
+	target, err := safeProjectPath(action.WorkingDir, action.Path)
+	if err != nil {
+		action.Status = "blocked"
+		return Result{Action: action, Status: "blocked", Error: err.Error()}
+	}
+	switch action.Type {
+	case "mkdir":
+		err = os.MkdirAll(target, 0755)
+	case "write_file":
+		if err = os.MkdirAll(filepath.Dir(target), 0755); err == nil {
+			flags := os.O_CREATE | os.O_WRONLY
+			if action.Overwrite {
+				flags |= os.O_TRUNC
+			} else {
+				flags |= os.O_EXCL
+			}
+			var file *os.File
+			file, err = os.OpenFile(target, flags, 0644)
+			if err == nil {
+				_, err = file.WriteString(action.Content)
+				closeErr := file.Close()
+				if err == nil {
+					err = closeErr
+				}
+			}
+		}
+	default:
+		err = fmt.Errorf("unsupported file action type %q", action.Type)
+	}
+
+	result := Result{Action: action, DurationMS: time.Since(started).Milliseconds()}
+	if err != nil {
+		result.Status = "failed"
+		result.Error = err.Error()
+		result.Action.Status = result.Status
+		return result
+	}
+	result.Status = "executed"
+	result.Action.Status = result.Status
+	if action.Type == "mkdir" {
+		result.Message = "directory created"
+	} else {
+		result.Message = "file written"
+	}
+	return result
+}
+
+func validateFileAction(action Action) error {
+	if action.WorkingDir == "" {
+		return fmt.Errorf("missing working directory for file action")
+	}
+	if action.Path == "" {
+		return fmt.Errorf("missing project-relative path for file action")
+	}
+	if _, err := safeProjectPath(action.WorkingDir, action.Path); err != nil {
+		return err
+	}
+	switch action.Type {
+	case "mkdir":
+		return validateMkdirTarget(action.WorkingDir, action.Path)
+	case "write_file":
+		return validateWriteTarget(action.WorkingDir, action.Path, action.Overwrite)
+	default:
+		return fmt.Errorf("unsupported file action type %q", action.Type)
+	}
+}
+
+func validateMkdirTarget(root, rel string) error {
+	target, err := safeProjectPath(root, rel)
+	if err != nil {
+		return err
+	}
+	if err := ensureNoSymlinkEscape(root, rel, true); err != nil {
+		return err
+	}
+	info, err := os.Stat(target)
+	if err == nil && !info.IsDir() {
+		return fmt.Errorf("mkdir target exists and is not a directory: %s", rel)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func validateWriteTarget(root, rel string, overwrite bool) error {
+	if strings.TrimSpace(filepath.Clean(filepath.FromSlash(rel))) == "." {
+		return fmt.Errorf("write_file target must be a file path")
+	}
+	target, err := safeProjectPath(root, rel)
+	if err != nil {
+		return err
+	}
+	if err := ensureNoSymlinkEscape(root, rel, true); err != nil {
+		return err
+	}
+	info, err := os.Lstat(target)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("write_file target is a symlink: %s", rel)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("write_file target is a directory: %s", rel)
+		}
+		if !overwrite {
+			return fmt.Errorf("write_file target exists; pass --force to overwrite: %s", rel)
+		}
+		return nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func safeProjectPath(root, rel string) (string, error) {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	if info, err := os.Lstat(rootAbs); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("project directory symlink is blocked for file actions: %s", rootAbs)
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	clean, err := cleanProjectRelativePath(rel)
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Join(rootAbs, clean)
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return "", err
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("file action path escapes project directory: %s", rel)
+	}
+	return targetAbs, nil
+}
+
+func cleanProjectRelativePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("empty project-relative path")
+	}
+	if filepath.IsAbs(path) || filepath.VolumeName(path) != "" {
+		return "", fmt.Errorf("absolute paths are blocked for file actions: %s", path)
+	}
+	clean := filepath.Clean(filepath.FromSlash(path))
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path traversal is blocked for file actions: %s", path)
+	}
+	for _, part := range strings.Split(filepath.ToSlash(clean), "/") {
+		if part == ".." {
+			return "", fmt.Errorf("path traversal is blocked for file actions: %s", path)
+		}
+	}
+	return clean, nil
+}
+
+func ensureNoSymlinkEscape(root, rel string, includeTarget bool) error {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	clean, err := cleanProjectRelativePath(rel)
+	if err != nil {
+		return err
+	}
+	current := rootAbs
+	parts := strings.Split(filepath.ToSlash(clean), "/")
+	limit := len(parts)
+	if !includeTarget && limit > 0 {
+		limit--
+	}
+	for i := 0; i < limit; i++ {
+		part := parts[i]
+		if part == "." || part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink path component is blocked for file actions: %s", part)
+		}
+	}
+	return nil
 }
 
 func parseSuggestedCommand(command string) (string, []string, error) {
@@ -428,6 +748,12 @@ func validateAction(action Action) error {
 func isAllowlisted(commandName string, args []string) bool {
 	name := strings.ToLower(filepath.Base(commandName))
 	switch name {
+	case "apt-get":
+		return hasPrefix(args, "install")
+	case "dnf", "yum", "zypper":
+		return hasPrefix(args, "install")
+	case "pacman":
+		return hasPrefix(args, "-S")
 	case "brew":
 		return hasPrefix(args, "install")
 	case "winget":
@@ -476,6 +802,10 @@ func isAllowlisted(commandName string, args []string) bool {
 		return len(args) >= 2 && args[0] == "toolchain" && args[1] == "install"
 	case "asdf":
 		return hasPrefix(args, "install") || hasPrefix(args, "local")
+	case "systemctl":
+		return len(args) == 2 && hasAnyPrefix(args, "start", "stop", "restart")
+	case "sc.exe", "sc":
+		return len(args) == 2 && hasAnyPrefix(args, "start", "stop")
 	default:
 		return false
 	}
@@ -514,8 +844,163 @@ func summarize(report *Report) string {
 	for _, result := range report.Results {
 		counts[result.Status]++
 	}
-	return fmt.Sprintf("%s completed: %d actions (dry-run: %d, executed: %d, blocked: %d, skipped: %d, failed: %d, timeout: %d). Audit log: %s",
-		report.Mode, len(report.Results), counts["dry-run"], counts["executed"], counts["blocked"], counts["skipped"], counts["failed"], counts["timeout"], report.AuditLog)
+	return fmt.Sprintf("%s completed with profile %s: %d actions (dry-run: %d, executed: %d, blocked: %d, skipped: %d, failed: %d, timeout: %d). Audit log: %s",
+		report.Mode, report.Profile, len(report.Results), counts["dry-run"], counts["executed"], counts["blocked"], counts["skipped"], counts["failed"], counts["timeout"], report.AuditLog)
+}
+
+func resolvePolicy(options Options) (resolvedPolicy, error) {
+	policy := resolvedPolicy{
+		Profile: valueOrDefault(options.Profile, ProfileDevelopment),
+		MaxRisk: valueOrDefault(options.MaxRisk, RiskHigh),
+	}
+	if strings.TrimSpace(options.PolicyFile) != "" {
+		abs, err := filepath.Abs(options.PolicyFile)
+		if err != nil {
+			return resolvedPolicy{}, err
+		}
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			return resolvedPolicy{}, err
+		}
+		var config policyFileConfig
+		if err := json.Unmarshal(data, &config); err != nil {
+			return resolvedPolicy{}, fmt.Errorf("invalid policy file %s: %w", abs, err)
+		}
+		policy.PolicyFile = abs
+		policy.AllowProductionMutation = config.AllowProductionMutation
+		if options.Profile == "" && config.Profile != "" {
+			policy.Profile = config.Profile
+		}
+		if options.MaxRisk == "" && config.MaxRisk != "" {
+			policy.MaxRisk = config.MaxRisk
+		}
+	}
+	var err error
+	policy.Profile, err = normalizeProfile(policy.Profile)
+	if err != nil {
+		return resolvedPolicy{}, err
+	}
+	policy.MaxRisk, err = normalizeRisk(policy.MaxRisk)
+	if err != nil {
+		return resolvedPolicy{}, err
+	}
+	return policy, nil
+}
+
+func evaluatePolicy(action Action, mode string, policy resolvedPolicy) PolicyDecision {
+	decision := PolicyDecision{
+		ActionID: action.ID,
+		Profile:  policy.Profile,
+		MaxRisk:  policy.MaxRisk,
+		Risk:     normalizeRiskOrDefault(action.Risk),
+		Mutating: actionMutates(action),
+		Allowed:  true,
+		Decision: "allowed",
+	}
+	if riskRank(decision.Risk) > riskRank(policy.MaxRisk) {
+		decision.Allowed = false
+		decision.Decision = "blocked"
+		decision.Reason = fmt.Sprintf("action risk %s exceeds --max-risk %s", decision.Risk, policy.MaxRisk)
+		return decision
+	}
+	if mode == "apply" && policy.Profile == ProfileProduction && decision.Mutating && !policy.AllowProductionMutation {
+		decision.Allowed = false
+		decision.Decision = "blocked"
+		decision.Reason = "production profile blocks mutating apply actions"
+		return decision
+	}
+	if mode == "apply" && action.RequiresAdmin && policy.Profile == ProfileProduction {
+		decision.Allowed = false
+		decision.Decision = "blocked"
+		decision.Reason = "production profile blocks admin-required apply actions"
+		return decision
+	}
+	return decision
+}
+
+func policyBlockedResult(action Action, decision PolicyDecision) Result {
+	action.Status = "blocked"
+	return Result{
+		Action:  action,
+		Status:  "blocked",
+		Error:   decision.Reason,
+		Message: "blocked by envdoctor policy profile",
+	}
+}
+
+func hasAllowedMutation(actions []Action, decisions []PolicyDecision) bool {
+	for i, action := range actions {
+		if i < len(decisions) && decisions[i].Allowed && actionMutates(action) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAllowedProjectMutation(actions []Action, decisions []PolicyDecision) bool {
+	for i, action := range actions {
+		if i < len(decisions) && decisions[i].Allowed && (action.MutatesProject || action.CreatesProject || action.Type == "mkdir" || action.Type == "write_file") {
+			return true
+		}
+	}
+	return false
+}
+
+func actionMutates(action Action) bool {
+	if action.Type == "manual" {
+		return false
+	}
+	if action.MutatesProject || action.CreatesProject || action.Type == "mkdir" || action.Type == "write_file" {
+		return true
+	}
+	return action.Command != "" || action.SuggestedCommand != ""
+}
+
+func normalizeProfile(profile string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "", ProfileDevelopment, "dev":
+		return ProfileDevelopment, nil
+	case ProfileProduction, "prod":
+		return ProfileProduction, nil
+	default:
+		return "", fmt.Errorf("unsupported profile %q; use development or production", profile)
+	}
+}
+
+func normalizeRisk(risk string) (string, error) {
+	switch normalizeRiskOrDefault(risk) {
+	case RiskLow:
+		return RiskLow, nil
+	case RiskMedium:
+		return RiskMedium, nil
+	case RiskHigh:
+		return RiskHigh, nil
+	default:
+		return "", fmt.Errorf("unsupported risk %q; use low, medium, or high", risk)
+	}
+}
+
+func normalizeRiskOrDefault(risk string) string {
+	risk = strings.ToLower(strings.TrimSpace(risk))
+	switch risk {
+	case RiskLow, RiskMedium, RiskHigh:
+		return risk
+	default:
+		return RiskMedium
+	}
+}
+
+func riskRank(risk string) int {
+	switch normalizeRiskOrDefault(risk) {
+	case RiskLow:
+		return 1
+	case RiskMedium:
+		return 2
+	case RiskHigh:
+		return 3
+	default:
+		return 2
+	}
 }
 
 func hasProjectMutation(actions []Action) bool {

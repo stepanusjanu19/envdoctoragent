@@ -9,6 +9,7 @@ import (
 
 	"github.com/stepanusjanu19/envdoctoragent/internal/dependencies"
 	"github.com/stepanusjanu19/envdoctoragent/internal/executor"
+	"github.com/stepanusjanu19/envdoctoragent/internal/scaffold"
 )
 
 const (
@@ -27,6 +28,12 @@ type Options struct {
 	Version       string
 	All           bool
 	AllowNonEmpty bool
+	Name          string
+	Module        string
+	PackageName   string
+	Source        string
+	Force         bool
+	CreateDir     bool
 }
 
 // ScanReport summarizes project manifests for lifecycle operations.
@@ -41,15 +48,18 @@ type ScanReport struct {
 
 // Plan is the project lifecycle plan output.
 type Plan struct {
-	Directory      string            `json:"directory"`
-	Operation      string            `json:"operation"`
-	Template       string            `json:"template,omitempty"`
-	Ecosystem      string            `json:"ecosystem,omitempty"`
-	PackageManager string            `json:"package_manager,omitempty"`
-	Package        string            `json:"package,omitempty"`
-	Actions        []executor.Action `json:"actions"`
-	Status         string            `json:"status"`
-	Summary        string            `json:"summary"`
+	Directory       string                  `json:"directory"`
+	Operation       string                  `json:"operation"`
+	Template        string                  `json:"template,omitempty"`
+	Source          string                  `json:"source,omitempty"`
+	Ecosystem       string                  `json:"ecosystem,omitempty"`
+	PackageManager  string                  `json:"package_manager,omitempty"`
+	Package         string                  `json:"package,omitempty"`
+	RequiresNetwork bool                    `json:"requires_network,omitempty"`
+	Files           []scaffold.FileMetadata `json:"files,omitempty"`
+	Actions         []executor.Action       `json:"actions"`
+	Status          string                  `json:"status"`
+	Summary         string                  `json:"summary"`
 }
 
 type projectTarget struct {
@@ -97,34 +107,37 @@ func Scan(dir string) (*ScanReport, error) {
 	}, nil
 }
 
+// ListTemplates returns supported project scaffold templates.
+func ListTemplates() []scaffold.Template {
+	return scaffold.List()
+}
+
 // GenerateInitPlan creates a project initialization plan for an existing directory.
 func GenerateInitPlan(template, dir string, options Options) (*Plan, error) {
-	template = normalize(template)
-	def, ok := templates()[template]
-	if !ok {
-		return nil, fmt.Errorf("unsupported project init template: %s", template)
-	}
-	absDir, err := existingDirectory(dir)
+	scaffoldPlan, err := scaffold.Generate(template, dir, scaffold.Options{
+		Name:          options.Name,
+		Module:        options.Module,
+		PackageName:   options.PackageName,
+		Source:        options.Source,
+		Force:         options.Force,
+		CreateDir:     options.CreateDir,
+		AllowNonEmpty: options.AllowNonEmpty,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if !options.AllowNonEmpty && !isDirectoryEmpty(absDir) {
-		return nil, fmt.Errorf("project init is blocked for non-empty directory %s; use --allow-non-empty to override", absDir)
-	}
-
-	actions := def.Actions(absDir)
-	for i := range actions {
-		actions[i] = finalizeAction(actions[i], absDir, OperationInit, def.Ecosystem, def.PackageManager, nil, true, true)
-	}
 	return &Plan{
-		Directory:      absDir,
-		Operation:      OperationInit,
-		Template:       template,
-		Ecosystem:      def.Ecosystem,
-		PackageManager: def.PackageManager,
-		Actions:        actions,
-		Status:         "safe-execution-preview",
-		Summary:        fmt.Sprintf("Generated %d project init action(s) for %s. No commands were executed.", len(actions), template),
+		Directory:       scaffoldPlan.Directory,
+		Operation:       OperationInit,
+		Template:        scaffoldPlan.Template.ID,
+		Source:          scaffoldPlan.SelectedSource,
+		Ecosystem:       scaffoldPlan.Template.Ecosystem,
+		PackageManager:  scaffoldPlan.Template.PackageManager,
+		RequiresNetwork: scaffoldPlan.RequiresNetwork,
+		Files:           scaffoldPlan.Files,
+		Actions:         scaffoldPlan.Actions,
+		Status:          "project-scaffolding-preview",
+		Summary:         scaffoldPlan.Summary,
 	}, nil
 }
 

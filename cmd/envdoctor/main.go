@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stepanusjanu19/envdoctoragent/internal/agent"
 	"github.com/stepanusjanu19/envdoctoragent/internal/analyzer"
 	"github.com/stepanusjanu19/envdoctoragent/internal/bootstrap"
 	"github.com/stepanusjanu19/envdoctoragent/internal/cliui"
@@ -20,6 +21,7 @@ import (
 	"github.com/stepanusjanu19/envdoctoragent/internal/installplan"
 	"github.com/stepanusjanu19/envdoctoragent/internal/projectops"
 	"github.com/stepanusjanu19/envdoctoragent/internal/recommendation"
+	"github.com/stepanusjanu19/envdoctoragent/internal/scaffold"
 	"github.com/stepanusjanu19/envdoctoragent/internal/scanner"
 	"github.com/stepanusjanu19/envdoctoragent/internal/service"
 	"github.com/stepanusjanu19/envdoctoragent/internal/snapshot"
@@ -317,10 +319,10 @@ Supports Linux, Windows, and macOS.`,
 	}
 	recommendCmd.Flags().BoolVar(&recommendJSON, "json", false, "Output in JSON format")
 
-	// service command (read-only)
+	// service command (read-only / safe execution preview)
 	var serviceCmd = &cobra.Command{
 		Use:   "service",
-		Short: "Inspect OS services without changing them",
+		Short: "Inspect and safely plan/apply OS service operations",
 	}
 	var serviceListJSON bool
 	var serviceListCmd = &cobra.Command{
@@ -386,9 +388,59 @@ Supports Linux, Windows, and macOS.`,
 		},
 	}
 	serviceDiagnoseCmd.Flags().BoolVar(&serviceDiagnoseJSON, "json", false, "Output in JSON format")
-	serviceCmd.AddCommand(serviceListCmd, serviceStatusCmd, serviceDiagnoseCmd)
 
-	// version command (read-only / plan-only)
+	var servicePlanJSON bool
+	var servicePlanCmd = &cobra.Command{
+		Use:   "plan <start|stop|restart> <name>",
+		Short: "Plan a service operation without executing it",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			report, err := service.Plan(args[0], args[1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating service plan: %v\n", err)
+				os.Exit(1)
+			}
+			if servicePlanJSON {
+				printJSON(report)
+			} else {
+				printServicePlan(report)
+			}
+		},
+	}
+	servicePlanCmd.Flags().BoolVar(&servicePlanJSON, "json", false, "Output in JSON format")
+
+	var serviceApplyFlags executionFlags
+	var serviceApplyCmd = &cobra.Command{
+		Use:   "apply <start|stop|restart> <name>",
+		Short: "Dry-run or apply a service operation with policy approval",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			report, err := service.Plan(args[0], args[1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating service plan: %v\n", err)
+				os.Exit(1)
+			}
+			options, err := executionOptions(cmd, serviceApplyFlags, ".")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error preparing service apply: %v\n", err)
+				os.Exit(1)
+			}
+			result, err := executor.Execute(executor.FromServicePlan(report, "."), options)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error running service apply: %v\n", err)
+				os.Exit(1)
+			}
+			if serviceApplyFlags.JSON {
+				printJSON(result)
+			} else {
+				printExecutionReport(result)
+			}
+		},
+	}
+	addExecutionFlags(serviceApplyCmd, &serviceApplyFlags)
+	serviceCmd.AddCommand(serviceListCmd, serviceStatusCmd, serviceDiagnoseCmd, servicePlanCmd, serviceApplyCmd)
+
+	// version command (read-only / safe execution preview)
 	var versionCmd = &cobra.Command{
 		Use:   "version",
 		Short: "Inspect version managers and project runtime requirements",
@@ -681,6 +733,21 @@ Supports Linux, Windows, and macOS.`,
 	}
 	projectScanCmd.Flags().BoolVar(&projectScanJSON, "json", false, "Output in JSON format")
 
+	var projectTemplatesJSON bool
+	var projectTemplatesCmd = &cobra.Command{
+		Use:   "templates",
+		Short: "List project scaffold templates",
+		Run: func(cmd *cobra.Command, args []string) {
+			templates := projectops.ListTemplates()
+			if projectTemplatesJSON {
+				printJSON(templates)
+			} else {
+				printProjectTemplates(templates)
+			}
+		},
+	}
+	projectTemplatesCmd.Flags().BoolVar(&projectTemplatesJSON, "json", false, "Output in JSON format")
+
 	var projectInitCmd = &cobra.Command{
 		Use:   "init",
 		Short: "Plan or apply project initialization templates",
@@ -707,7 +774,7 @@ Supports Linux, Windows, and macOS.`,
 			}
 		},
 	}
-	addProjectFlags(projectInitPlanCmd, &projectInitPlanFlags, true)
+	addScaffoldFlags(projectInitPlanCmd, &projectInitPlanFlags, true)
 
 	var projectInitApplyFlags projectFlags
 	var projectInitExecutionFlags executionFlags
@@ -725,7 +792,7 @@ Supports Linux, Windows, and macOS.`,
 				fmt.Fprintf(os.Stderr, "Error creating project init plan: %v\n", err)
 				os.Exit(1)
 			}
-			options, err := executionOptions(cmd, projectInitExecutionFlags, dir)
+			options, err := executionOptions(cmd, projectInitExecutionFlags, plan.Directory)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error preparing project init apply: %v\n", err)
 				os.Exit(1)
@@ -742,7 +809,7 @@ Supports Linux, Windows, and macOS.`,
 			}
 		},
 	}
-	addProjectFlags(projectInitApplyCmd, &projectInitApplyFlags, false)
+	addScaffoldFlags(projectInitApplyCmd, &projectInitApplyFlags, false)
 	addExecutionFlags(projectInitApplyCmd, &projectInitExecutionFlags)
 	projectInitCmd.AddCommand(projectInitPlanCmd, projectInitApplyCmd)
 
@@ -812,7 +879,71 @@ Supports Linux, Windows, and macOS.`,
 	addProjectFlags(projectDepsApplyCmd, &projectDepsApplyFlags, false)
 	addExecutionFlags(projectDepsApplyCmd, &projectDepsExecutionFlags)
 	projectDepsCmd.AddCommand(projectDepsPlanCmd, projectDepsApplyCmd)
-	projectCmd.AddCommand(projectScanCmd, projectInitCmd, projectDepsCmd)
+	projectCmd.AddCommand(projectScanCmd, projectTemplatesCmd, projectInitCmd, projectDepsCmd)
+
+	// agent command (deterministic autonomous preview)
+	var agentCmd = &cobra.Command{
+		Use:   "agent",
+		Short: "Plan or run deterministic local autonomous workflows",
+	}
+	var agentPlanFlags agentCommandFlags
+	var agentPlanCmd = &cobra.Command{
+		Use:   "plan [directory]",
+		Short: "Create an autonomous agent plan without executing actions",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			report, err := agent.Plan(agentOptions(agentPlanFlags, dir))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating agent plan: %v\n", err)
+				os.Exit(1)
+			}
+			if agentPlanFlags.JSON {
+				printJSON(report)
+			} else {
+				printAgentReport(report)
+			}
+		},
+	}
+	addAgentFlags(agentPlanCmd, &agentPlanFlags, false)
+
+	var agentRunFlags agentCommandFlags
+	var agentRunCmd = &cobra.Command{
+		Use:   "run [directory]",
+		Short: "Dry-run or apply an autonomous agent workflow with policy approval",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			execFlags := executionFlags{
+				DryRun: agentRunFlags.DryRun, Yes: agentRunFlags.Yes, JSON: agentRunFlags.JSON,
+				AuditLog: agentRunFlags.AuditLog, Timeout: agentRunFlags.Timeout,
+				Profile: agentRunFlags.Profile, MaxRisk: agentRunFlags.MaxRisk, PolicyFile: agentRunFlags.PolicyFile,
+			}
+			options, err := executionOptions(cmd, execFlags, dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error preparing agent run: %v\n", err)
+				os.Exit(1)
+			}
+			report, err := agent.Run(agentOptions(agentRunFlags, dir), options)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error running agent: %v\n", err)
+				os.Exit(1)
+			}
+			if agentRunFlags.JSON {
+				printJSON(report)
+			} else {
+				printAgentReport(report)
+			}
+		},
+	}
+	addAgentFlags(agentRunCmd, &agentRunFlags, true)
+	agentCmd.AddCommand(agentPlanCmd, agentRunCmd)
 
 	// ui command (interactive, non-mutating)
 	var uiScript string
@@ -833,7 +964,7 @@ Supports Linux, Windows, and macOS.`,
 	}
 	uiCmd.Flags().StringVar(&uiScript, "script", "", "Run comma-separated UI actions for smoke checks, e.g. diagnose,fix,exit")
 
-	rootCmd.AddCommand(systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd, serviceCmd, versionCmd, installCmd, fixCmd, bootstrapCmd, projectCmd, uiCmd)
+	rootCmd.AddCommand(systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd, serviceCmd, versionCmd, installCmd, fixCmd, bootstrapCmd, projectCmd, agentCmd, uiCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -851,11 +982,14 @@ func printJSON(value interface{}) {
 }
 
 type executionFlags struct {
-	DryRun   bool
-	Yes      bool
-	JSON     bool
-	AuditLog string
-	Timeout  string
+	DryRun     bool
+	Yes        bool
+	JSON       bool
+	AuditLog   string
+	Timeout    string
+	Profile    string
+	MaxRisk    string
+	PolicyFile string
 }
 
 type projectFlags struct {
@@ -866,6 +1000,32 @@ type projectFlags struct {
 	Version       string
 	All           bool
 	AllowNonEmpty bool
+	Name          string
+	Module        string
+	PackageName   string
+	Source        string
+	Force         bool
+	CreateDir     bool
+}
+
+type agentCommandFlags struct {
+	DryRun        bool
+	Yes           bool
+	JSON          bool
+	AuditLog      string
+	Timeout       string
+	Profile       string
+	MaxRisk       string
+	PolicyFile    string
+	Goal          string
+	Template      string
+	Name          string
+	Module        string
+	PackageName   string
+	Source        string
+	CreateDir     bool
+	Force         bool
+	AllowNonEmpty bool
 }
 
 func addExecutionFlags(command *cobra.Command, flags *executionFlags) {
@@ -874,6 +1034,31 @@ func addExecutionFlags(command *cobra.Command, flags *executionFlags) {
 	command.Flags().BoolVar(&flags.JSON, "json", false, "Output in JSON format")
 	command.Flags().StringVar(&flags.AuditLog, "audit-log", "", "Write audit JSONL to the specified file")
 	command.Flags().StringVar(&flags.Timeout, "timeout", executor.DefaultTimeout.String(), "Per-action timeout, for example 30s or 2m")
+	command.Flags().StringVar(&flags.Profile, "profile", executor.ProfileDevelopment, "Execution policy profile: development or production")
+	command.Flags().StringVar(&flags.MaxRisk, "max-risk", executor.RiskHigh, "Maximum action risk allowed by policy: low, medium, or high")
+	command.Flags().StringVar(&flags.PolicyFile, "policy-file", "", "Optional JSON policy file")
+}
+
+func addAgentFlags(command *cobra.Command, flags *agentCommandFlags, includeExecution bool) {
+	command.Flags().BoolVar(&flags.JSON, "json", false, "Output in JSON format")
+	command.Flags().StringVar(&flags.Profile, "profile", executor.ProfileDevelopment, "Policy profile: development or production")
+	command.Flags().StringVar(&flags.MaxRisk, "max-risk", executor.RiskHigh, "Maximum action risk allowed by policy: low, medium, or high")
+	command.Flags().StringVar(&flags.PolicyFile, "policy-file", "", "Optional JSON policy file")
+	command.Flags().StringVar(&flags.Goal, "goal", agent.GoalDiagnose, "Agent goal: diagnose, onboard, repair, scaffold, or bootstrap")
+	command.Flags().StringVar(&flags.Template, "template", "", "Scaffold template id for --goal scaffold")
+	command.Flags().StringVar(&flags.Name, "name", "", "Project display/package name for scaffold templates")
+	command.Flags().StringVar(&flags.Module, "module", "", "Module path for scaffold templates")
+	command.Flags().StringVar(&flags.PackageName, "package", "", "Package or namespace for scaffold templates")
+	command.Flags().StringVar(&flags.Source, "source", "auto", "Scaffold source: auto, internal, official, or manual")
+	command.Flags().BoolVar(&flags.CreateDir, "create-dir", false, "Create the target project directory when it does not exist")
+	command.Flags().BoolVar(&flags.Force, "force", false, "Allow scaffold file overwrite when safe")
+	command.Flags().BoolVar(&flags.AllowNonEmpty, "allow-non-empty", false, "Allow scaffold planning/apply in a non-empty directory")
+	if includeExecution {
+		command.Flags().BoolVar(&flags.DryRun, "dry-run", true, "Preview actions without executing them")
+		command.Flags().BoolVar(&flags.Yes, "yes", false, "Approve execution of allowlisted actions")
+		command.Flags().StringVar(&flags.AuditLog, "audit-log", "", "Write audit JSONL to the specified file")
+		command.Flags().StringVar(&flags.Timeout, "timeout", executor.DefaultTimeout.String(), "Per-action timeout, for example 30s or 2m")
+	}
 }
 
 func addProjectFlags(command *cobra.Command, flags *projectFlags, includeJSON bool) {
@@ -888,6 +1073,16 @@ func addProjectFlags(command *cobra.Command, flags *projectFlags, includeJSON bo
 	command.Flags().BoolVar(&flags.AllowNonEmpty, "allow-non-empty", false, "Allow project init planning/apply in a non-empty directory")
 }
 
+func addScaffoldFlags(command *cobra.Command, flags *projectFlags, includeJSON bool) {
+	addProjectFlags(command, flags, includeJSON)
+	command.Flags().StringVar(&flags.Name, "name", "", "Project display/package name for scaffold templates")
+	command.Flags().StringVar(&flags.Module, "module", "", "Module path for Go/JVM-style scaffold templates")
+	command.Flags().StringVar(&flags.PackageName, "package", "", "Package or namespace for scaffold templates")
+	command.Flags().StringVar(&flags.Source, "source", "auto", "Scaffold source: auto, internal, official, or manual")
+	command.Flags().BoolVar(&flags.Force, "force", false, "Allow scaffold file overwrite when safe")
+	command.Flags().BoolVar(&flags.CreateDir, "create-dir", false, "Create the target project directory when it does not exist")
+}
+
 func projectOptions(flags projectFlags) projectops.Options {
 	return projectops.Options{
 		Ecosystem:     flags.Ecosystem,
@@ -896,6 +1091,31 @@ func projectOptions(flags projectFlags) projectops.Options {
 		Version:       flags.Version,
 		All:           flags.All,
 		AllowNonEmpty: flags.AllowNonEmpty,
+		Name:          flags.Name,
+		Module:        flags.Module,
+		PackageName:   flags.PackageName,
+		Source:        flags.Source,
+		Force:         flags.Force,
+		CreateDir:     flags.CreateDir,
+	}
+}
+
+func agentOptions(flags agentCommandFlags, dir string) agent.Options {
+	return agent.Options{
+		Directory: dir,
+		Goal:      flags.Goal,
+		Template:  flags.Template,
+		Profile:   flags.Profile,
+		MaxRisk:   flags.MaxRisk,
+		Project: projectops.Options{
+			Name:          flags.Name,
+			Module:        flags.Module,
+			PackageName:   flags.PackageName,
+			Source:        flags.Source,
+			Force:         flags.Force,
+			CreateDir:     flags.CreateDir,
+			AllowNonEmpty: flags.AllowNonEmpty,
+		},
 	}
 }
 
@@ -918,25 +1138,55 @@ func executionOptions(command *cobra.Command, flags executionFlags, baseDir stri
 	if timeout <= 0 {
 		return executor.Options{}, fmt.Errorf("--timeout must be positive")
 	}
+	auditLog := flags.AuditLog
+	if dryRun && auditLog == "" {
+		auditLog = filepath.Join(os.TempDir(), "envdoctor", "audit", time.Now().Format("2006-01-02-150405")+".jsonl")
+	}
+	profile := flags.Profile
+	if !command.Flags().Changed("profile") {
+		profile = ""
+	}
+	maxRisk := flags.MaxRisk
+	if !command.Flags().Changed("max-risk") {
+		maxRisk = ""
+	}
 
 	return executor.Options{
-		DryRun:   dryRun,
-		Approved: flags.Yes,
-		BaseDir:  baseDir,
-		AuditLog: flags.AuditLog,
-		Timeout:  timeout,
+		DryRun:     dryRun,
+		Approved:   flags.Yes,
+		BaseDir:    baseDir,
+		AuditLog:   auditLog,
+		Timeout:    timeout,
+		Profile:    profile,
+		MaxRisk:    maxRisk,
+		PolicyFile: flags.PolicyFile,
 	}, nil
 }
 
 func printExecutionReport(report *executor.Report) {
 	fmt.Println(report.Summary)
 	fmt.Printf("Mode: %s\n", report.Mode)
+	fmt.Printf("Profile: %s\n", report.Profile)
+	fmt.Printf("Max risk: %s\n", report.MaxRisk)
+	if report.PolicyFile != "" {
+		fmt.Printf("Policy file: %s\n", report.PolicyFile)
+	}
 	fmt.Printf("Audit log: %s\n", report.AuditLog)
 	if report.SnapshotFile != "" {
 		fmt.Printf("Pre-apply snapshot: %s\n", report.SnapshotFile)
 	}
 	if report.ProjectSnapshotFile != "" {
 		fmt.Printf("Project snapshot: %s\n", report.ProjectSnapshotFile)
+	}
+	if len(report.PolicyDecisions) > 0 {
+		fmt.Println("Policy decisions:")
+		for _, decision := range report.PolicyDecisions {
+			if decision.Allowed {
+				fmt.Printf("  - %s: allowed (%s)\n", decision.ActionID, decision.Risk)
+			} else {
+				fmt.Printf("  - %s: blocked (%s)\n", decision.ActionID, decision.Reason)
+			}
+		}
 	}
 	if len(report.ProjectChanges) > 0 {
 		fmt.Println("Project changes:")
@@ -955,6 +1205,15 @@ func printExecutionReport(report *executor.Report) {
 		} else if result.Action.Command != "" {
 			fmt.Printf("  Command: %s\n", strings.Join(append([]string{result.Action.Command}, result.Action.Args...), " "))
 		}
+		if result.Action.Type == "mkdir" || result.Action.Type == "write_file" {
+			fmt.Printf("  File action: %s %s\n", result.Action.Type, result.Action.Path)
+			if result.Action.ContentBytes > 0 {
+				fmt.Printf("  Content bytes: %d\n", result.Action.ContentBytes)
+			}
+		}
+		if result.Action.ManualSteps != "" {
+			fmt.Printf("  Manual steps: %s\n", result.Action.ManualSteps)
+		}
 		if result.Error != "" {
 			fmt.Printf("  Error: %s\n", result.Error)
 		}
@@ -964,6 +1223,49 @@ func printExecutionReport(report *executor.Report) {
 		if result.Action.RollbackHint != "" {
 			fmt.Printf("  Rollback hint: %s\n", result.Action.RollbackHint)
 		}
+	}
+}
+
+func printAgentReport(report *agent.Report) {
+	fmt.Println(report.Summary)
+	fmt.Printf("Goal: %s\n", report.Goal)
+	fmt.Printf("Profile: %s\n", report.Profile)
+	fmt.Printf("Max risk: %s\n", report.MaxRisk)
+	fmt.Printf("Directory: %s\n", report.Directory)
+	fmt.Printf("Status: %s\n", report.Status)
+	if report.Diagnostics != nil {
+		fmt.Println("Diagnostics: available")
+	}
+	if report.ProjectScan != nil {
+		fmt.Printf("Project scan: %s\n", report.ProjectScan.Summary)
+	}
+	if report.FixPlan != nil {
+		fmt.Printf("Fix plan: %s\n", report.FixPlan.Summary)
+	}
+	if report.BootstrapPlan != nil {
+		fmt.Printf("Bootstrap plan: %s\n", report.BootstrapPlan.Summary)
+	}
+	if report.ProjectPlan != nil {
+		fmt.Printf("Project plan: %s\n", report.ProjectPlan.Summary)
+	}
+	if len(report.Actions) > 0 {
+		fmt.Println("Actions:")
+		for _, action := range report.Actions {
+			fmt.Printf("- [%s] %s\n", valueOrDash(action.Category), action.Title)
+			if action.Command != "" {
+				fmt.Printf("  Command: %s\n", strings.Join(append([]string{action.Command}, action.Args...), " "))
+			}
+			if action.Path != "" {
+				fmt.Printf("  File action: %s %s\n", action.Type, action.Path)
+			}
+			if action.ManualSteps != "" {
+				fmt.Printf("  Manual steps: %s\n", action.ManualSteps)
+			}
+		}
+	}
+	if report.Execution != nil {
+		fmt.Println()
+		printExecutionReport(report.Execution)
 	}
 }
 
@@ -1027,6 +1329,17 @@ func printProjectScan(report *projectops.ScanReport) {
 	}
 }
 
+func printProjectTemplates(templates []scaffold.Template) {
+	if len(templates) == 0 {
+		fmt.Println("No scaffold templates are registered.")
+		return
+	}
+	fmt.Printf("%-18s %-12s %-18s %-10s %s\n", "Template", "Language", "Framework", "Source", "Summary")
+	for _, template := range templates {
+		fmt.Printf("%-18s %-12s %-18s %-10s %s\n", template.ID, valueOrDash(template.Language), valueOrDash(template.Framework), valueOrDash(template.Source), template.Summary)
+	}
+}
+
 func printProjectPlan(plan *projectops.Plan) {
 	fmt.Println(plan.Summary)
 	fmt.Printf("Directory: %s\n", plan.Directory)
@@ -1034,16 +1347,34 @@ func printProjectPlan(plan *projectops.Plan) {
 	if plan.Template != "" {
 		fmt.Printf("Template: %s\n", plan.Template)
 	}
+	if plan.Source != "" {
+		fmt.Printf("Source: %s\n", plan.Source)
+	}
 	if plan.Ecosystem != "" {
 		fmt.Printf("Ecosystem: %s\n", plan.Ecosystem)
 	}
 	if plan.PackageManager != "" {
 		fmt.Printf("Package manager: %s\n", plan.PackageManager)
 	}
+	if plan.RequiresNetwork {
+		fmt.Println("Requires network: yes")
+	}
+	if len(plan.Files) > 0 {
+		fmt.Println("Files:")
+		for _, file := range plan.Files {
+			fmt.Printf("  - %s (%d bytes)\n", file.Path, file.Bytes)
+		}
+	}
 	for _, action := range plan.Actions {
 		fmt.Printf("- [%s] %s\n", valueOrDash(action.Status), action.Title)
 		if action.Command != "" {
 			fmt.Printf("  Command: %s\n", strings.Join(append([]string{action.Command}, action.Args...), " "))
+		}
+		if action.Type == "mkdir" || action.Type == "write_file" {
+			fmt.Printf("  File action: %s %s\n", action.Type, action.Path)
+			if action.ContentBytes > 0 {
+				fmt.Printf("  Content bytes: %d\n", action.ContentBytes)
+			}
 		}
 		if action.ManualSteps != "" {
 			fmt.Printf("  Manual steps: %s\n", action.ManualSteps)
@@ -1078,6 +1409,26 @@ func printServiceInfo(info *service.ServiceInfo) {
 	}
 	if info.Recommendation != "" {
 		fmt.Printf("Recommendation: %s\n", info.Recommendation)
+	}
+}
+
+func printServicePlan(report *service.PlanReport) {
+	fmt.Println(report.Summary)
+	fmt.Printf("Service: %s\n", report.Service)
+	fmt.Printf("Operation: %s\n", report.Operation)
+	fmt.Printf("Manager: %s\n", report.Manager)
+	fmt.Printf("Status: %s\n", report.Status)
+	for _, action := range report.Actions {
+		fmt.Printf("- [%s] %s\n", action.Status, action.Title)
+		if action.Command != "" {
+			fmt.Printf("  Command: %s\n", strings.Join(append([]string{action.Command}, action.Args...), " "))
+		}
+		if action.ManualSteps != "" {
+			fmt.Printf("  Manual steps: %s\n", action.ManualSteps)
+		}
+		if action.RollbackHint != "" {
+			fmt.Printf("  Rollback hint: %s\n", action.RollbackHint)
+		}
 	}
 }
 
@@ -1129,7 +1480,7 @@ func printInstallPlan(plan *installplan.Plan) {
 	fmt.Printf("Manager: %s\n", valueOrDash(action.Manager))
 	fmt.Printf("Risk: %s | Requires admin: %t | Safe to run: %t\n", action.Risk, action.RequiresAdmin, action.SafeToRun)
 	if action.Command != "" {
-		fmt.Printf("Suggested command: %s\n", action.Command)
+		fmt.Printf("Suggested command: %s\n", strings.Join(append([]string{action.Command}, action.Args...), " "))
 	}
 	if action.ManualSteps != "" {
 		fmt.Printf("Manual steps: %s\n", action.ManualSteps)

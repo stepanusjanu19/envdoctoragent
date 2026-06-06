@@ -120,8 +120,9 @@ release-publish: tools-goreleaser
 	@VERSION="$(VERSION)" GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GORELEASER) release --clean
 
 smoke:
-	@rm -rf -- "$(SMOKE_DIR)/project-empty" "$(SMOKE_DIR)/project-node" "$(SMOKE_DIR)/project-yes"
+	@rm -rf -- "$(SMOKE_DIR)/project-empty" "$(SMOKE_DIR)/project-node" "$(SMOKE_DIR)/project-yes" "$(SMOKE_DIR)/scaffold-react" "$(SMOKE_DIR)/scaffold-go" "$(SMOKE_DIR)/scaffold-python" "$(SMOKE_DIR)/scaffold-conflict" "$(SMOKE_DIR)/agent-scaffold-plan" "$(SMOKE_DIR)/agent-scaffold-yes" "$(SMOKE_DIR)/agent-prod-block"
 	@mkdir -p "$(SMOKE_DIR)/node" "$(SMOKE_DIR)/go" "$(SMOKE_DIR)/version" "$(SMOKE_DIR)/bootstrap" "$(SMOKE_DIR)/project-empty" "$(SMOKE_DIR)/project-node" "$(SMOKE_DIR)/project-yes"
+	@mkdir -p "$(SMOKE_DIR)/scaffold-react" "$(SMOKE_DIR)/scaffold-go" "$(SMOKE_DIR)/scaffold-conflict"
 	@mkdir -p "$(DEPENDENCY_SMOKE_DIR)/python" "$(DEPENDENCY_SMOKE_DIR)/node" "$(DEPENDENCY_SMOKE_DIR)/go" "$(DEPENDENCY_SMOKE_DIR)/rust" "$(DEPENDENCY_SMOKE_DIR)/php"
 	@mkdir -p "$(DEPENDENCY_SMOKE_DIR)/maven" "$(DEPENDENCY_SMOKE_DIR)/gradle" "$(DEPENDENCY_SMOKE_DIR)/dotnet" "$(DEPENDENCY_SMOKE_DIR)/nuget-config" "$(DEPENDENCY_SMOKE_DIR)/nuget-props"
 	@mkdir -p "$(DEPENDENCY_SMOKE_DIR)/ruby" "$(DEPENDENCY_SMOKE_DIR)/dart" "$(DEPENDENCY_SMOKE_DIR)/swift" "$(DEPENDENCY_SMOKE_DIR)/elixir" "$(DEPENDENCY_SMOKE_DIR)/lua"
@@ -189,14 +190,41 @@ smoke:
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) service list >/dev/null
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) service status envdoctor-smoke-missing >/dev/null
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) service diagnose --json envdoctor-smoke-missing > "$(SMOKE_DIR)/service.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) service plan restart envdoctor-smoke-missing --json > "$(SMOKE_DIR)/service-plan.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) service apply restart envdoctor-smoke-missing --dry-run --json --audit-log "$(SMOKE_DIR)/service-apply-audit.jsonl" > "$(SMOKE_DIR)/service-apply.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) service apply restart envdoctor-smoke-missing --yes --json --profile production --audit-log "$(SMOKE_DIR)/service-apply-prod-audit.jsonl" > "$(SMOKE_DIR)/service-apply-prod.json"
+	@grep -q '"profile": "production"' "$(SMOKE_DIR)/service-apply-prod.json"
+	@grep -q '"allowed": false' "$(SMOKE_DIR)/service-apply-prod.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) version scan --json "$(SMOKE_DIR)/version" > "$(SMOKE_DIR)/version-scan.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) version plan --json "$(SMOKE_DIR)/version" > "$(SMOKE_DIR)/version-plan.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) install plan python --json > "$(SMOKE_DIR)/install-plan.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) fix plan --json "$(SMOKE_DIR)/version" > "$(SMOKE_DIR)/fix-plan.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) bootstrap plan --json "$(SMOKE_DIR)/bootstrap" > "$(SMOKE_DIR)/bootstrap-plan.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project scan --json "$(SMOKE_DIR)/project-node" > "$(SMOKE_DIR)/project-scan.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project templates --json > "$(SMOKE_DIR)/project-templates.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project init plan node --json "$(SMOKE_DIR)/project-empty" > "$(SMOKE_DIR)/project-init-plan.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project init plan react-vite --json "$(SMOKE_DIR)/scaffold-react" > "$(SMOKE_DIR)/scaffold-react-plan.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project init apply go --dry-run --json --audit-log "$(SMOKE_DIR)/project-init-apply-audit.jsonl" "$(SMOKE_DIR)/project-empty" > "$(SMOKE_DIR)/project-init-apply.json"
+	@before="$$(find "$(SMOKE_DIR)/scaffold-go" -mindepth 1 | wc -l | tr -d ' ')"; \
+		GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project init apply go-web --dry-run --json "$(SMOKE_DIR)/scaffold-go" > "$(SMOKE_DIR)/scaffold-go-dry-run.json"; \
+		after="$$(find "$(SMOKE_DIR)/scaffold-go" -mindepth 1 | wc -l | tr -d ' ')"; \
+		if [ "$$before" != "$$after" ]; then \
+			printf 'Project scaffold dry-run created files.\n'; \
+			exit 1; \
+		fi
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project init apply python-cli --yes --json --create-dir --audit-log "$(SMOKE_DIR)/scaffold-python-audit.jsonl" "$(SMOKE_DIR)/scaffold-python" > "$(SMOKE_DIR)/scaffold-python-apply.json"
+	@test -f "$(SMOKE_DIR)/scaffold-python/pyproject.toml"
+	@test -f "$(SMOKE_DIR)/scaffold-python/src/scaffold_python/__main__.py"
+	@grep -q '"project_snapshot_file"' "$(SMOKE_DIR)/scaffold-python-apply.json"
+	@printf '%s\n' 'module example.com/conflict' > "$(SMOKE_DIR)/scaffold-conflict/go.mod"
+	@if GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project init plan go-web --allow-non-empty "$(SMOKE_DIR)/scaffold-conflict" >/dev/null 2>&1; then \
+		printf 'Project scaffold unexpectedly allowed overwrite without --force.\n'; \
+		exit 1; \
+	fi
+	@if GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project init plan ../x --json "$(SMOKE_DIR)/scaffold-react" >/dev/null 2>&1; then \
+		printf 'Project scaffold unexpectedly allowed path traversal template id.\n'; \
+		exit 1; \
+	fi
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project deps plan sync --json "$(SMOKE_DIR)/project-node" > "$(SMOKE_DIR)/project-deps-sync.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project deps plan install lodash --ecosystem node --json "$(SMOKE_DIR)/project-node" > "$(SMOKE_DIR)/project-deps-install.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project deps plan update lodash --ecosystem node --json "$(SMOKE_DIR)/project-node" > "$(SMOKE_DIR)/project-deps-update.json"
@@ -219,17 +247,49 @@ smoke:
 		exit 1; \
 	fi
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) fix apply --dry-run --json --audit-log "$(SMOKE_DIR)/fix-apply-audit.jsonl" "$(SMOKE_DIR)/version" > "$(SMOKE_DIR)/fix-apply.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) fix apply --dry-run --json --profile development --audit-log "$(SMOKE_DIR)/fix-apply-dev-audit.jsonl" "$(SMOKE_DIR)/version" > "$(SMOKE_DIR)/fix-apply-dev.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) fix apply --dry-run --json --profile production --audit-log "$(SMOKE_DIR)/fix-apply-prod-audit.jsonl" "$(SMOKE_DIR)/version" > "$(SMOKE_DIR)/fix-apply-prod.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) install apply python --dry-run --json --audit-log "$(SMOKE_DIR)/install-apply-audit.jsonl" > "$(SMOKE_DIR)/install-apply.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) install apply python --dry-run --json --profile production --audit-log "$(SMOKE_DIR)/install-apply-prod-audit.jsonl" > "$(SMOKE_DIR)/install-apply-prod.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) version apply --dry-run --json --audit-log "$(SMOKE_DIR)/version-apply-audit.jsonl" "$(SMOKE_DIR)/version" > "$(SMOKE_DIR)/version-apply.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) bootstrap apply --dry-run --json --audit-log "$(SMOKE_DIR)/bootstrap-apply-audit.jsonl" "$(SMOKE_DIR)/bootstrap" > "$(SMOKE_DIR)/bootstrap-apply.json"
+	@grep -q '"profile": "production"' "$(SMOKE_DIR)/fix-apply-prod.json"
+	@grep -q '"profile": "production"' "$(SMOKE_DIR)/install-apply-prod.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) agent plan --json --goal diagnose --profile development > "$(SMOKE_DIR)/agent-plan-diagnose.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) agent plan --json --goal onboard "$(SMOKE_DIR)/project-node" > "$(SMOKE_DIR)/agent-plan-onboard.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) agent plan --json --goal scaffold --template go-web --create-dir "$(SMOKE_DIR)/agent-scaffold-plan" > "$(SMOKE_DIR)/agent-plan-scaffold.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) agent run --dry-run --json --goal repair "$(SMOKE_DIR)/project-node" > "$(SMOKE_DIR)/agent-run-repair.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) agent run --yes --json --goal scaffold --template python-cli --create-dir --audit-log "$(SMOKE_DIR)/agent-scaffold-yes-audit.jsonl" "$(SMOKE_DIR)/agent-scaffold-yes" > "$(SMOKE_DIR)/agent-run-scaffold.json"
+	@test -f "$(SMOKE_DIR)/agent-scaffold-yes/pyproject.toml"
+	@test -f "$(SMOKE_DIR)/agent-scaffold-yes/src/agent_scaffold_yes/__main__.py"
+	@grep -q '"project_snapshot_file"' "$(SMOKE_DIR)/agent-run-scaffold.json"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) agent run --yes --json --profile production --goal scaffold --template python-cli --create-dir --audit-log "$(SMOKE_DIR)/agent-prod-block-audit.jsonl" "$(SMOKE_DIR)/agent-prod-block" > "$(SMOKE_DIR)/agent-run-prod-block.json"
+	@if [ -e "$(SMOKE_DIR)/agent-prod-block" ]; then \
+		printf 'Production agent scaffold created a project directory despite policy block.\n'; \
+		exit 1; \
+	fi
+	@grep -q '"allowed": false' "$(SMOKE_DIR)/agent-run-prod-block.json"
+	@grep -q 'production profile blocks mutating apply actions' "$(SMOKE_DIR)/agent-run-prod-block.json"
 	@test -s "$(SMOKE_DIR)/fix-apply-audit.jsonl"
+	@test -s "$(SMOKE_DIR)/fix-apply-dev-audit.jsonl"
+	@test -s "$(SMOKE_DIR)/fix-apply-prod-audit.jsonl"
 	@test -s "$(SMOKE_DIR)/install-apply-audit.jsonl"
+	@test -s "$(SMOKE_DIR)/install-apply-prod-audit.jsonl"
+	@test -s "$(SMOKE_DIR)/service-apply-audit.jsonl"
+	@test -s "$(SMOKE_DIR)/service-apply-prod-audit.jsonl"
 	@test -s "$(SMOKE_DIR)/version-apply-audit.jsonl"
 	@test -s "$(SMOKE_DIR)/bootstrap-apply-audit.jsonl"
 	@test -s "$(SMOKE_DIR)/project-init-apply-audit.jsonl"
 	@test -s "$(SMOKE_DIR)/project-deps-apply-audit.jsonl"
 	@test -s "$(SMOKE_DIR)/project-init-yes-audit.jsonl"
-	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run "$(SMOKE_DIR)/jsoncheck.go" "$(SMOKE_DIR)/system.json" "$(SMOKE_DIR)/toolchain.json" "$(SMOKE_DIR)/path.json" "$(SMOKE_DIR)/container.json" "$(SMOKE_DIR)/dependencies.json" "$(SMOKE_DIR)/snapshot.json" "$(SMOKE_DIR)/diagnose.json" "$(SMOKE_DIR)/explain.json" "$(SMOKE_DIR)/recommend.json" "$(SMOKE_DIR)/service.json" "$(SMOKE_DIR)/version-scan.json" "$(SMOKE_DIR)/version-plan.json" "$(SMOKE_DIR)/install-plan.json" "$(SMOKE_DIR)/fix-plan.json" "$(SMOKE_DIR)/bootstrap-plan.json" "$(SMOKE_DIR)/project-scan.json" "$(SMOKE_DIR)/project-init-plan.json" "$(SMOKE_DIR)/project-init-apply.json" "$(SMOKE_DIR)/project-deps-sync.json" "$(SMOKE_DIR)/project-deps-install.json" "$(SMOKE_DIR)/project-deps-update.json" "$(SMOKE_DIR)/project-deps-remove.json" "$(SMOKE_DIR)/project-deps-apply.json" "$(SMOKE_DIR)/project-init-yes.json" "$(SMOKE_DIR)/fix-apply.json" "$(SMOKE_DIR)/install-apply.json" "$(SMOKE_DIR)/version-apply.json" "$(SMOKE_DIR)/bootstrap-apply.json"
+	@test -s "$(SMOKE_DIR)/scaffold-python-audit.jsonl"
+	@test -s "$(SMOKE_DIR)/agent-scaffold-yes-audit.jsonl"
+	@test -s "$(SMOKE_DIR)/agent-prod-block-audit.jsonl"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run "$(SMOKE_DIR)/jsoncheck.go" "$(SMOKE_DIR)/system.json" "$(SMOKE_DIR)/toolchain.json" "$(SMOKE_DIR)/path.json" "$(SMOKE_DIR)/container.json" "$(SMOKE_DIR)/dependencies.json" "$(SMOKE_DIR)/snapshot.json" "$(SMOKE_DIR)/diagnose.json" "$(SMOKE_DIR)/explain.json" "$(SMOKE_DIR)/recommend.json" "$(SMOKE_DIR)/service.json" "$(SMOKE_DIR)/service-plan.json" "$(SMOKE_DIR)/service-apply.json" "$(SMOKE_DIR)/service-apply-prod.json" "$(SMOKE_DIR)/version-scan.json" "$(SMOKE_DIR)/version-plan.json" "$(SMOKE_DIR)/install-plan.json" "$(SMOKE_DIR)/fix-plan.json" "$(SMOKE_DIR)/bootstrap-plan.json" "$(SMOKE_DIR)/project-scan.json" "$(SMOKE_DIR)/project-templates.json" "$(SMOKE_DIR)/project-init-plan.json" "$(SMOKE_DIR)/scaffold-react-plan.json" "$(SMOKE_DIR)/project-init-apply.json" "$(SMOKE_DIR)/scaffold-go-dry-run.json" "$(SMOKE_DIR)/scaffold-python-apply.json" "$(SMOKE_DIR)/project-deps-sync.json" "$(SMOKE_DIR)/project-deps-install.json" "$(SMOKE_DIR)/project-deps-update.json" "$(SMOKE_DIR)/project-deps-remove.json" "$(SMOKE_DIR)/project-deps-apply.json" "$(SMOKE_DIR)/project-init-yes.json" "$(SMOKE_DIR)/fix-apply.json" "$(SMOKE_DIR)/fix-apply-dev.json" "$(SMOKE_DIR)/fix-apply-prod.json" "$(SMOKE_DIR)/install-apply.json" "$(SMOKE_DIR)/install-apply-prod.json" "$(SMOKE_DIR)/version-apply.json" "$(SMOKE_DIR)/bootstrap-apply.json" "$(SMOKE_DIR)/agent-plan-diagnose.json" "$(SMOKE_DIR)/agent-plan-onboard.json" "$(SMOKE_DIR)/agent-plan-scaffold.json" "$(SMOKE_DIR)/agent-run-repair.json" "$(SMOKE_DIR)/agent-run-scaffold.json" "$(SMOKE_DIR)/agent-run-prod-block.json" "integrations/vscode/package.json"
+	@test -f "integrations/vscode/extension.js"
+	@test -f "integrations/jetbrains/README.md"
+	@test -f "integrations/jetbrains/external-tools.xml"
+	@grep -q 'Envdoctor Agent Plan JSON' "integrations/jetbrains/external-tools.xml"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) ui --script "diagnose,version:$(SMOKE_DIR)/version,fix:$(SMOKE_DIR)/version,bootstrap:$(SMOKE_DIR)/bootstrap,exit" > "$(SMOKE_DIR)/ui.txt"
 	@grep -q 'Envdoctor Dashboard' "$(SMOKE_DIR)/ui.txt"
 	@grep -q 'Menu' "$(SMOKE_DIR)/ui.txt"

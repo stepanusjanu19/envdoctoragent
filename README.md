@@ -265,7 +265,7 @@ Phase 3 uses deterministic rules. LLM-powered troubleshooting and automatic repa
 
 ---
 
-### Phase 4B — Service Agent (Read-Only Preview)
+### Phase 4B — Service Agent (Read-Only + Safe Apply Preview)
 
 #### List Services
 ```sh
@@ -291,11 +291,21 @@ envdoctor service diagnose <name>
 envdoctor service diagnose --json <name>
 ```
 
-Service commands inspect native service managers only. They do not restart, enable, disable, or modify services.
+#### Service Plan/Apply
+```sh
+envdoctor service plan <start|stop|restart> <name>
+envdoctor service plan restart docker --json
+
+envdoctor service apply <start|stop|restart> <name> --dry-run
+envdoctor service apply restart docker --yes --profile development
+envdoctor service apply restart docker --yes --profile production
+```
+
+Service status commands are read-only. Service apply uses the shared executor policy: dry-run by default, `--yes` required for mutation, structured command args only, audit log, timeout, and production profile blocking. Linux supports `systemctl start|stop|restart`; Windows supports `sc.exe start|stop` and restart as stop/start. macOS service mutation remains manual/blocked until a safe launchctl domain can be selected.
 
 ---
 
-### Phase 4C — Version Manager Engine (Read-Only / Plan-Only Preview)
+### Phase 4C — Version Manager Engine (Read-Only + Safe Apply Preview)
 
 #### Scan Runtime Versions
 ```sh
@@ -315,11 +325,11 @@ envdoctor version plan [directory]
 envdoctor version plan --json [directory]
 ```
 
-Generates suggested version-manager install/switch commands. Envdoctor does not run auto-switch commands.
+Generates suggested version-manager install/switch commands. `version apply` can dry-run or execute allowlisted version-manager actions through the shared executor, but `version fix` and autonomous runtime switching remain disabled.
 
 ---
 
-### Phase 4D — Installation Advisor (Plan-Only Preview)
+### Phase 4D — Installation Advisor (Plan + Safe Apply Preview)
 
 ```sh
 envdoctor install plan <tool>
@@ -328,13 +338,13 @@ envdoctor install plan <tool>
 envdoctor install plan <tool> --json
 ```
 
-Suggests package-manager commands for Homebrew, apt, dnf, yum, pacman, zypper, winget, or Chocolatey when detected. Envdoctor does not install tools in this phase.
+Suggests package-manager commands for Homebrew, apt, dnf, yum, pacman, zypper, winget, or Chocolatey when detected. `install apply` uses structured command args and executor policy; no arbitrary install shell is accepted.
 
 Common runtime and package-manager mappings include Python, Node.js, Go, Rust, PHP, Composer, Java, Maven, Gradle, .NET SDK, Ruby, Dart, Swift, Elixir, Lua, R, Julia, Haskell, Perl, Conan, and vcpkg.
 
 ---
 
-### Phase 4E — Safe Fix Plan + Bootstrap Plan (Plan-Only Preview)
+### Phase 4E — Safe Fix Plan + Bootstrap Plan (Plan + Safe Apply Preview)
 
 #### Safe Fix Plan
 ```sh
@@ -354,7 +364,7 @@ envdoctor bootstrap plan [directory]
 envdoctor bootstrap plan --json [directory]
 ```
 
-Generates a project setup plan from runtime requirements, dependency manifests, and container/service hints. Envdoctor does not install dependencies, start services, or modify project files.
+Generates a project setup plan from runtime requirements, dependency manifests, and container/service hints. `fix apply` and `bootstrap apply` remain approval-gated executor previews. `diagnose --fix` and bare `bootstrap` remain disabled.
 
 ---
 
@@ -441,10 +451,10 @@ envdoctor bootstrap apply --yes <project-dir>
 Safety behavior:
 - `--dry-run` is the default and never runs suggested commands.
 - `--yes` is required before any allowlisted command can execute.
-- Every dry-run/apply writes an audit JSONL log.
+- Every dry-run/apply writes an audit JSONL log; dry-run defaults to a temp audit path unless `--audit-log` is provided.
 - `--yes` creates a pre-apply snapshot under `.envdoctor/snapshots/`.
 - Shell operators and expansions such as `&&`, `;`, `|`, redirection, `$(`, and shell variables are blocked.
-- Service restart/fix, `diagnose --fix`, AI auto-fix, remote execution, and cloud mutation remain future work.
+- Bare `service restart`/`service fix`, `diagnose --fix`, AI auto-fix, remote execution, and cloud mutation remain future work.
 
 ---
 
@@ -489,6 +499,147 @@ Safety behavior:
 
 ---
 
+### Phase 5E — Project Scaffolding Agent
+
+Project initialization now uses a hybrid scaffold registry. Internal templates write deterministic starter files through safe file actions, while official generators remain available through structured `command` + `args` where they are non-interactive enough to expose safely.
+
+```sh
+envdoctor project templates
+envdoctor project templates --json
+
+envdoctor project init plan react-vite --json <project-dir>
+envdoctor project init apply go-web --dry-run --json <project-dir>
+envdoctor project init apply python-cli --yes --create-dir <new-project-dir>
+```
+
+Scaffold flags:
+
+```sh
+--name my-app
+--module github.com/acme/my-app
+--package com.acme.app
+--source auto|internal|official|manual
+--create-dir
+--force
+--allow-non-empty
+```
+
+Supported scaffold templates include:
+
+```text
+node, express, react-vite, vue-vite, next, sveltekit, nestjs,
+python, python-cli, fastapi, flask,
+go, go-module, go-cli, go-web,
+rust, rust-cli, rust-lib, rust-web,
+php, php-composer, laravel,
+java-maven, java-gradle, kotlin-gradle, spring-boot,
+dotnet, dotnet-console, dotnet-webapi,
+dart, dart-console, flutter, flutter-app,
+swift, elixir, ruby, c-cli, cpp-cli, lua, r, julia, haskell, perl
+```
+
+Safety behavior:
+- Internal scaffold actions use `type=mkdir` and `type=write_file`; they do not execute shell commands.
+- File actions can only write inside the target project directory.
+- Path traversal, absolute paths, symlink project roots/components, delete commands, and shell operators are blocked.
+- Existing files are not overwritten unless `--force` is passed.
+- `--create-dir` is required when the target directory does not exist.
+- Official generators that are missing from PATH return structured blocked results during apply instead of crashing.
+- AI-generated project synthesis remains future work.
+
+---
+
+### Phase 5F — Completion Hardening and Policy Profiles
+
+Apply commands now share an explicit policy layer for developer and production use:
+
+```sh
+envdoctor fix apply --dry-run --json --profile development
+envdoctor fix apply --dry-run --json --profile production
+envdoctor install apply python --dry-run --json --profile production
+```
+
+Policy flags:
+
+```sh
+--profile development|production
+--max-risk low|medium|high
+--policy-file policy.json
+```
+
+Behavior:
+- `development` keeps the Phase 5C behavior: dry-run by default, `--yes` required for allowlisted mutation.
+- `production` blocks mutating apply actions by default, even when `--yes` is passed.
+- Policy decisions are included in JSON output and audit logs with profile, max risk, decision, and blocked reason.
+- Install apply uses structured command plus args for package managers; shell strings with operators are not used for Linux install actions.
+- `--policy-file` can set profile, max risk, and future policy switches, while CLI flags remain the explicit override.
+
+Example policy file:
+
+```json
+{
+  "profile": "production",
+  "max_risk": "medium",
+  "allow_production_mutation": false
+}
+```
+
+---
+
+### Phase 6A — Autonomous Agent Preview
+
+The first agent phase is a local deterministic orchestrator over existing engines. It does not use an LLM and does not bypass the Phase 5F policy layer.
+
+```sh
+envdoctor agent plan [directory]
+envdoctor agent run [directory] --dry-run
+```
+
+Agent goals:
+
+```sh
+--goal diagnose
+--goal onboard
+--goal repair
+--goal scaffold --template go-web --create-dir
+--goal bootstrap
+```
+
+Examples:
+
+```sh
+envdoctor agent plan --json --goal diagnose --profile development
+envdoctor agent plan --json --goal onboard <project-dir>
+envdoctor agent run --dry-run --json --goal repair <project-dir>
+envdoctor agent run --yes --json --goal scaffold --template python-cli --create-dir <new-dir>
+envdoctor agent run --yes --json --profile production --goal scaffold --template python-cli --create-dir <new-dir>
+```
+
+Behavior:
+- `agent plan` never executes actions.
+- `agent run` defaults to dry-run.
+- `agent run --yes` executes only actions that pass executor allowlist and policy decisions.
+- Production profile remains read-only/plan-only in v1; mutating production automation is future work.
+- AI troubleshooting, bare `service restart`/`service fix`, `diagnose --fix`, remote/cloud execution, and autonomous production mutation remain future phases.
+
+---
+
+### Phase 5 Integration — IDE CLI Wrappers
+
+The IDE integration preview keeps Envdoctor as the single engine and wraps CLI JSON output:
+
+```text
+integrations/vscode
+integrations/jetbrains
+```
+
+- VSCode wrapper commands: Diagnose, Fix Plan, and Agent Plan.
+- VSCode settings: `envdoctor.path`, `envdoctor.profile`, and `envdoctor.goal`.
+- JetBrains integration uses External Tools templates for diagnose, fix plan, and agent plan.
+- IDE wrappers do not call `apply`, install tools, restart services, or mutate project files.
+
+---
+
 ## Project Architecture
 
 ```
@@ -513,6 +664,8 @@ envdoctor
     ├── bootstrap                Project bootstrap planning
     ├── executor                 Approval-gated dry-run/apply engine
     ├── projectops               Project init and dependency lifecycle operations
+    ├── scaffold                 Hybrid project scaffold registry and safe file actions
+    ├── agent                    Deterministic local autonomous orchestration preview
     └── cliui                    Interactive non-mutating CLI UI
 ```
 
@@ -542,6 +695,9 @@ go run ./cmd/envdoctor recommend --json
 go run ./cmd/envdoctor dockerize --output <output-file> <fixture-dir>
 go run ./cmd/envdoctor service list
 go run ./cmd/envdoctor service status <service-name>
+go run ./cmd/envdoctor service plan restart <service-name> --json
+go run ./cmd/envdoctor service apply restart <service-name> --dry-run --json
+go run ./cmd/envdoctor service apply restart <service-name> --yes --json --profile production
 go run ./cmd/envdoctor version scan --json <fixture-dir>
 go run ./cmd/envdoctor version plan --json <fixture-dir>
 go run ./cmd/envdoctor install plan python --json
@@ -551,12 +707,24 @@ go run ./cmd/envdoctor fix apply --dry-run --json
 go run ./cmd/envdoctor install apply python --dry-run --json
 go run ./cmd/envdoctor version apply --dry-run --json <fixture-dir>
 go run ./cmd/envdoctor bootstrap apply --dry-run --json <fixture-dir>
+go run ./cmd/envdoctor fix apply --dry-run --json --profile development
+go run ./cmd/envdoctor fix apply --dry-run --json --profile production
+go run ./cmd/envdoctor install apply python --dry-run --json --profile production
 go run ./cmd/envdoctor project scan --json <fixture-dir>
+go run ./cmd/envdoctor project templates --json
 go run ./cmd/envdoctor project init plan node --json <empty-dir>
 go run ./cmd/envdoctor project init apply go --dry-run --json <empty-dir>
+go run ./cmd/envdoctor project init plan react-vite --json <empty-dir>
+go run ./cmd/envdoctor project init apply go-web --dry-run --json <empty-dir>
+go run ./cmd/envdoctor project init apply python-cli --yes --json --create-dir <new-dir>
 go run ./cmd/envdoctor project deps plan sync --json <fixture-dir>
 go run ./cmd/envdoctor project deps plan install lodash --ecosystem node --json <fixture-dir>
 go run ./cmd/envdoctor project deps apply sync --dry-run --json <fixture-dir>
+go run ./cmd/envdoctor agent plan --json --goal diagnose --profile development
+go run ./cmd/envdoctor agent plan --json --goal onboard <fixture-dir>
+go run ./cmd/envdoctor agent plan --json --goal scaffold --template go-web --create-dir <new-dir>
+go run ./cmd/envdoctor agent run --dry-run --json --goal repair <fixture-dir>
+go run ./cmd/envdoctor agent run --yes --json --profile production --goal scaffold --template python-cli --create-dir <new-dir>
 go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 ```
 
@@ -570,19 +738,22 @@ go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 | **Phase 2** | ✅ Hardened / Verified | Multi-manifest Dependency Doctor, Container Doctor, Snapshot System |
 | **Phase 3** | ✅ Rule-Based Hardened | Log Analyzer, Recommendation Engine, Dockerfile Generator; AI and Auto-Fix planned |
 | **Phase 4A** | ✅ Implemented | Makefile, Windows PowerShell helper, dev/prod/release/smoke workflows |
-| **Phase 4B** | ✅ Read-Only Preview | Service list/status/diagnose without restart or fix actions |
-| **Phase 4C** | ✅ Read-Only / Plan-Only Preview | Version manager detection, runtime requirement scan, version plan |
-| **Phase 4D** | ✅ Plan-Only Preview | Installation advisor with package-manager command suggestions |
-| **Phase 4E** | ✅ Plan-Only Preview | Safe fix plan and bootstrap plan without applying changes |
+| **Phase 4B** | ✅ Safe Execution Preview | Service list/status/diagnose plus policy-gated service plan/apply |
+| **Phase 4C** | ✅ Safe Execution Preview | Version manager detection, runtime requirement scan, version plan/apply |
+| **Phase 4D** | ✅ Safe Execution Preview | Installation advisor with structured package-manager plan/apply |
+| **Phase 4E** | ✅ Safe Execution Preview | Safe fix/bootstrap plan and approval-gated apply |
 | **Phase 4F** | ✅ CLI UX Stabilized | JSON output for legacy scan commands and explicit status wording |
 | **Phase 4G** | ✅ Non-Mutating UI Preview | Interactive CLI menu for read-only and plan-only workflows |
 | **Phase 4H** | ✅ Metadata Registry Implemented | Broad dependency manifest registry with metadata-only coverage |
 | **Phase 4I** | ✅ UI Polish Implemented | ANSI dashboard and stable stdlib terminal UI |
-| **Phase 5** | ✅ CI Added / 🚧 IDE Planned | GitHub Actions check/smoke/release workflow; VSCode and JetBrains wrappers planned |
+| **Phase 5** | ✅ CI + IDE Wrapper Preview | GitHub Actions check/smoke/release workflow; VSCode and JetBrains CLI wrappers |
 | **Phase 5B** | ✅ Release Packaging Implemented | GoReleaser archives, checksums, Linux packages, and package-manager metadata |
 | **Phase 5C** | ✅ Safe Execution Preview | Approval-gated `apply` commands, dry-run default, audit log, pre-apply snapshot |
 | **Phase 5D** | ✅ Project Lifecycle Preview | Project scan/init/deps plan and approval-gated dependency operations |
-| **Phase 6** | 🚧 Future AI / Autonomous | AI troubleshooting, autonomous auto-fix, service mutation, multi-agent diagnostics, remote/cloud validation |
+| **Phase 5E** | ✅ Project Scaffolding Preview | Hybrid starter boilerplate registry, safe file actions, official/manual scaffold fallback |
+| **Phase 5F** | ✅ Policy Hardening Preview | Development/production profiles, max-risk policy, policy audit metadata, structured install actions |
+| **Phase 6A** | ✅ Autonomous Agent Preview | Local deterministic agent plan/run over diagnose/onboard/repair/scaffold/bootstrap goals |
+| **Phase 6B+** | 🚧 Future AI / Remote | AI troubleshooting, autonomous auto-fix, service fix automation, multi-agent diagnostics, remote/cloud validation |
 
 ---
 

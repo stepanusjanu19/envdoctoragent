@@ -34,6 +34,10 @@ go.work.sum
 # env file
 .env
 
+# Local planning references; PLAN.md is the canonical versioned roadmap.
+PLAN2.md
+PLAN3.md
+
 # Editor/IDE
 # .idea/
 # .vscode/

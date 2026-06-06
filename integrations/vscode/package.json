@@ -1,0 +1,67 @@
+{
+  "name": "envdoctoragent-cli-wrapper",
+  "displayName": "Envdoctor CLI Wrapper",
+  "description": "Lightweight VSCode wrapper for Envdoctor CLI JSON workflows.",
+  "version": "0.1.0",
+  "publisher": "envdoctoragent",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:envdoctor.diagnose",
+    "onCommand:envdoctor.fixPlan",
+    "onCommand:envdoctor.agentPlan"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "envdoctor.diagnose",
+        "title": "Envdoctor: Diagnose"
+      },
+      {
+        "command": "envdoctor.fixPlan",
+        "title": "Envdoctor: Fix Plan"
+      },
+      {
+        "command": "envdoctor.agentPlan",
+        "title": "Envdoctor: Agent Plan"
+      }
+    ],
+    "configuration": {
+      "title": "Envdoctor",
+      "properties": {
+        "envdoctor.path": {
+          "type": "string",
+          "default": "envdoctor",
+          "description": "Path to the envdoctor binary."
+        },
+        "envdoctor.profile": {
+          "type": "string",
+          "enum": [
+            "development",
+            "production"
+          ],
+          "default": "development",
+          "description": "Default policy profile for plan-only commands."
+        },
+        "envdoctor.goal": {
+          "type": "string",
+          "enum": [
+            "diagnose",
+            "onboard",
+            "repair",
+            "scaffold",
+            "bootstrap"
+          ],
+          "default": "diagnose",
+          "description": "Default agent plan goal."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+<toolSet name="Envdoctor">
+  <tool name="Envdoctor Diagnose JSON" description="Run envdoctor diagnose --json" showInMainMenu="true" showInEditor="false" showInProject="true" showInSearchPopup="false" disabled="false" useConsole="true" showConsoleOnStdOut="true" showConsoleOnStdErr="true" synchronizeAfterRun="false">
+    <exec>
+      <option name="COMMAND" value="envdoctor" />
+      <option name="PARAMETERS" value="diagnose --json" />
+      <option name="WORKING_DIRECTORY" value="$ProjectFileDir$" />
+    </exec>
+  </tool>
+  <tool name="Envdoctor Fix Plan JSON" description="Run envdoctor fix plan --json for the current project" showInMainMenu="true" showInEditor="false" showInProject="true" showInSearchPopup="false" disabled="false" useConsole="true" showConsoleOnStdOut="true" showConsoleOnStdErr="true" synchronizeAfterRun="false">
+    <exec>
+      <option name="COMMAND" value="envdoctor" />
+      <option name="PARAMETERS" value="fix plan --json $ProjectFileDir$" />
+      <option name="WORKING_DIRECTORY" value="$ProjectFileDir$" />
+    </exec>
+  </tool>
+  <tool name="Envdoctor Agent Plan JSON" description="Run envdoctor agent plan --json for the current project" showInMainMenu="true" showInEditor="false" showInProject="true" showInSearchPopup="false" disabled="false" useConsole="true" showConsoleOnStdOut="true" showConsoleOnStdErr="true" synchronizeAfterRun="false">
+    <exec>
+      <option name="COMMAND" value="envdoctor" />
+      <option name="PARAMETERS" value="agent plan --json --goal diagnose --profile development $ProjectFileDir$" />
+      <option name="WORKING_DIRECTORY" value="$ProjectFileDir$" />
+    </exec>
+  </tool>
+</toolSet>
