@@ -364,6 +364,26 @@ function Invoke-Smoke {
     Invoke-Go @("run", $Pkg, "scan", "dependencies", $nodeDir) | Out-Null
     Invoke-Go @("run", $Pkg, "scan", "dependencies", $goDir) | Out-Null
     Invoke-Go @("run", $Pkg, "scan", "dependencies", $dependencyDir) | Out-Null
+    $aboutText = Invoke-GoOutput @("run", $Pkg, "about")
+    $diagnoseText = Invoke-GoOutput @("run", $Pkg, "diagnose")
+    $agentPlanText = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--goal", "diagnose")
+    $projectTemplatesText = Invoke-GoOutput @("run", $Pkg, "project", "templates")
+    $diagnosePlain = Invoke-GoOutput @("run", $Pkg, "--plain", "diagnose")
+    if ($aboutText -notmatch "Envdoctor") {
+        throw "About output did not contain Envdoctor title"
+    }
+    if ($diagnoseText -notmatch "Progress:") {
+        throw "Diagnose output did not contain progress"
+    }
+    if ($agentPlanText -notmatch "Next steps") {
+        throw "Agent plan output did not contain next steps"
+    }
+    if ($projectTemplatesText -notmatch "Project Templates") {
+        throw "Project templates output did not contain friendly title"
+    }
+    if ($diagnosePlain -match "Progress:" -or $diagnosePlain.Contains([string][char]27)) {
+        throw "Plain output contained progress or ANSI escape codes"
+    }
 
     $system = Invoke-GoOutput @("run", $Pkg, "system", "--json")
     $toolchain = Invoke-GoOutput @("run", $Pkg, "scan", "toolchain", "--json")
@@ -536,8 +556,8 @@ function Invoke-Smoke {
     Invoke-GoOutput @("run", $Pkg, "ui", "--script", "diagnose,version:$versionDir,fix:$versionDir,bootstrap:$bootstrapDir,exit") |
         Set-Content -Path (Join-Path $SmokeDir "ui.txt") -Encoding UTF8
     $uiOutput = Get-Content -Raw -Path (Join-Path $SmokeDir "ui.txt")
-    if ($uiOutput -notmatch "Envdoctor Dashboard" -or $uiOutput -notmatch "Menu") {
-        throw "UI smoke output is missing dashboard or menu sections"
+    if ($uiOutput -notmatch "Envdoctor Dashboard" -or $uiOutput -notmatch "Menu" -or $uiOutput -notmatch "About" -or $uiOutput -notmatch "Progress:" -or $uiOutput -notmatch "Next steps") {
+        throw "UI smoke output is missing dashboard, about, progress, next steps, or menu sections"
     }
     if ($uiOutput -match "(?i)executed|installed|restarted|fixed") {
         throw "UI smoke output contains mutating action wording"

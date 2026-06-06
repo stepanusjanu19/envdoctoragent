@@ -26,10 +26,13 @@ import (
 	"github.com/stepanusjanu19/envdoctoragent/internal/service"
 	"github.com/stepanusjanu19/envdoctoragent/internal/snapshot"
 	"github.com/stepanusjanu19/envdoctoragent/internal/system"
+	"github.com/stepanusjanu19/envdoctoragent/internal/terminalui"
 	versionpkg "github.com/stepanusjanu19/envdoctoragent/internal/version"
 
 	"github.com/spf13/cobra"
 )
+
+var plainOutput bool
 
 func main() {
 	var rootCmd = &cobra.Command{
@@ -38,6 +41,15 @@ func main() {
 		Version: buildVersion(),
 		Long: `An intelligent cross-platform environment diagnostic tool.
 Supports Linux, Windows, and macOS.`,
+	}
+	rootCmd.PersistentFlags().BoolVar(&plainOutput, "plain", false, "Disable ANSI styling and progress bars for human-readable output")
+
+	var aboutCmd = &cobra.Command{
+		Use:   "about",
+		Short: "Show envdoctor version, scope, and safety model",
+		Run: func(cmd *cobra.Command, args []string) {
+			newPresenter().About()
+		},
 	}
 
 	// system command
@@ -171,7 +183,7 @@ Supports Linux, Windows, and macOS.`,
 		if jsonOutput {
 			diagnose.PrintJSON(report)
 		} else {
-			diagnose.Print(report)
+			printDiagnoseReport(report)
 		}
 	}
 
@@ -952,9 +964,11 @@ Supports Linux, Windows, and macOS.`,
 		Short: "Start an interactive CLI UI for read-only and plan-only workflows",
 		Run: func(cmd *cobra.Command, args []string) {
 			err := cliui.Run(cliui.Options{
-				In:     os.Stdin,
-				Out:    os.Stdout,
-				Script: uiScript,
+				In:      os.Stdin,
+				Out:     os.Stdout,
+				Script:  uiScript,
+				Version: buildVersion(),
+				Plain:   plainOutput,
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error running UI: %v\n", err)
@@ -964,7 +978,7 @@ Supports Linux, Windows, and macOS.`,
 	}
 	uiCmd.Flags().StringVar(&uiScript, "script", "", "Run comma-separated UI actions for smoke checks, e.g. diagnose,fix,exit")
 
-	rootCmd.AddCommand(systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd, serviceCmd, versionCmd, installCmd, fixCmd, bootstrapCmd, projectCmd, agentCmd, uiCmd)
+	rootCmd.AddCommand(aboutCmd, systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd, serviceCmd, versionCmd, installCmd, fixCmd, bootstrapCmd, projectCmd, agentCmd, uiCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -979,6 +993,74 @@ func printJSON(value interface{}) {
 		os.Exit(1)
 	}
 	fmt.Println(string(data))
+}
+
+func newPresenter() *terminalui.Presenter {
+	return terminalui.New(os.Stdout, terminalui.Options{
+		Plain:   plainOutput,
+		Version: buildVersion(),
+	})
+}
+
+func printDiagnoseReport(report *diagnose.Report) {
+	ui := newPresenter()
+	ui.Header("Envdoctor Diagnose", "workstation health summary")
+	ui.Progress(1, 4, "System discovery")
+	ui.Progress(2, 4, "Toolchain inventory")
+	ui.Progress(3, 4, "PATH and container checks")
+	ui.Progress(4, 4, "Recommendation summary")
+
+	ui.Section("Summary")
+	ui.StatusRow("Status", "implemented", "read-only diagnosis")
+	if report.SystemInfo != nil {
+		ui.Row("OS", report.SystemInfo.OS)
+		ui.Row("Architecture", report.SystemInfo.Arch)
+		ui.Row("Shell", report.SystemInfo.Shell)
+	}
+	ui.Row("Toolchain entries", fmt.Sprint(len(report.Toolchain)))
+	if report.PathReport != nil {
+		ui.Row("PATH entries", fmt.Sprint(len(report.PathReport.Entries)))
+		ui.Row("PATH issues", fmt.Sprint(report.PathReport.IssueCount))
+	}
+	if report.ContainerInfo != nil {
+		ui.Row("Container status", containerSummary(report.ContainerInfo))
+	}
+	ui.Row("Recommendations", fmt.Sprint(len(report.Recommendations)))
+
+	if len(report.Recommendations) > 0 {
+		ui.Section("Issues and actions")
+		for _, rec := range report.Recommendations {
+			ui.Bullet(rec.Severity, rec.Title)
+			ui.Detail("Category", rec.Category)
+			if rec.Command != "" {
+				ui.Detail("Suggested command", rec.Command)
+			}
+			if rec.ManualSteps != "" {
+				ui.Detail("Manual", rec.ManualSteps)
+			}
+		}
+	}
+	ui.NextSteps("Run envdoctor diagnose --json for stable automation output.", "Use plan/apply commands with --dry-run before considering --yes.")
+}
+
+func containerSummary(info *container.ContainerInfo) string {
+	if info == nil {
+		return "-"
+	}
+	var parts []string
+	if info.Docker != nil {
+		parts = append(parts, "docker="+info.Docker.DaemonStatus)
+	}
+	if info.Podman != nil {
+		parts = append(parts, "podman="+info.Podman.Status)
+	}
+	if info.Kubernetes != nil {
+		parts = append(parts, "kubernetes="+info.Kubernetes.ConfigStatus)
+	}
+	if len(parts) == 0 {
+		return "no container tooling detected"
+	}
+	return strings.Join(parts, ", ")
 }
 
 type executionFlags struct {
@@ -1164,109 +1246,125 @@ func executionOptions(command *cobra.Command, flags executionFlags, baseDir stri
 }
 
 func printExecutionReport(report *executor.Report) {
-	fmt.Println(report.Summary)
-	fmt.Printf("Mode: %s\n", report.Mode)
-	fmt.Printf("Profile: %s\n", report.Profile)
-	fmt.Printf("Max risk: %s\n", report.MaxRisk)
+	ui := newPresenter()
+	ui.Header("Envdoctor Apply Report", "approval-gated executor")
+	ui.Progress(1, 3, "Load policy")
+	ui.Progress(2, 3, "Evaluate actions")
+	ui.Progress(3, 3, "Summarize results")
+	ui.Section("Summary")
+	ui.Row("Result", report.Summary)
+	ui.StatusRow("Mode", report.Mode, "executor outcome")
+	ui.Row("Profile", report.Profile)
+	ui.Row("Max risk", report.MaxRisk)
 	if report.PolicyFile != "" {
-		fmt.Printf("Policy file: %s\n", report.PolicyFile)
+		ui.Row("Policy file", report.PolicyFile)
 	}
-	fmt.Printf("Audit log: %s\n", report.AuditLog)
+	ui.Row("Audit log", report.AuditLog)
 	if report.SnapshotFile != "" {
-		fmt.Printf("Pre-apply snapshot: %s\n", report.SnapshotFile)
+		ui.Row("Pre-apply snapshot", report.SnapshotFile)
 	}
 	if report.ProjectSnapshotFile != "" {
-		fmt.Printf("Project snapshot: %s\n", report.ProjectSnapshotFile)
+		ui.Row("Project snapshot", report.ProjectSnapshotFile)
 	}
 	if len(report.PolicyDecisions) > 0 {
-		fmt.Println("Policy decisions:")
+		ui.Section("Policy decisions")
 		for _, decision := range report.PolicyDecisions {
 			if decision.Allowed {
-				fmt.Printf("  - %s: allowed (%s)\n", decision.ActionID, decision.Risk)
+				ui.Bullet("allowed", fmt.Sprintf("%s (%s)", decision.ActionID, decision.Risk))
 			} else {
-				fmt.Printf("  - %s: blocked (%s)\n", decision.ActionID, decision.Reason)
+				ui.Bullet("blocked", fmt.Sprintf("%s (%s)", decision.ActionID, decision.Reason))
 			}
 		}
 	}
 	if len(report.ProjectChanges) > 0 {
-		fmt.Println("Project changes:")
+		ui.Section("Project changes")
 		for _, change := range report.ProjectChanges {
-			fmt.Printf("  - %s\n", change)
+			ui.Bullet("changed", change)
 		}
 	}
 	if len(report.Results) == 0 {
-		fmt.Println("No executable actions were generated.")
+		ui.NextSteps("No executable actions were generated.", "Review the matching plan command for details.")
 		return
 	}
+	ui.Section("Actions")
 	for _, result := range report.Results {
-		fmt.Printf("- [%s] %s\n", result.Status, result.Action.Title)
+		ui.Bullet(result.Status, result.Action.Title)
 		if result.Action.SuggestedCommand != "" {
-			fmt.Printf("  Suggested command: %s\n", result.Action.SuggestedCommand)
+			ui.Detail("Suggested command", result.Action.SuggestedCommand)
 		} else if result.Action.Command != "" {
-			fmt.Printf("  Command: %s\n", strings.Join(append([]string{result.Action.Command}, result.Action.Args...), " "))
+			ui.Detail("Command", commandLine(result.Action.Command, result.Action.Args))
 		}
 		if result.Action.Type == "mkdir" || result.Action.Type == "write_file" {
-			fmt.Printf("  File action: %s %s\n", result.Action.Type, result.Action.Path)
+			ui.Detail("File action", strings.TrimSpace(result.Action.Type+" "+result.Action.Path))
 			if result.Action.ContentBytes > 0 {
-				fmt.Printf("  Content bytes: %d\n", result.Action.ContentBytes)
+				ui.Detail("Content bytes", fmt.Sprint(result.Action.ContentBytes))
 			}
 		}
 		if result.Action.ManualSteps != "" {
-			fmt.Printf("  Manual steps: %s\n", result.Action.ManualSteps)
+			ui.Detail("Manual", result.Action.ManualSteps)
 		}
 		if result.Error != "" {
-			fmt.Printf("  Error: %s\n", result.Error)
+			ui.Detail("Error", result.Error)
 		}
 		if result.Message != "" {
-			fmt.Printf("  Message: %s\n", result.Message)
+			ui.Detail("Message", result.Message)
 		}
 		if result.Action.RollbackHint != "" {
-			fmt.Printf("  Rollback hint: %s\n", result.Action.RollbackHint)
+			ui.Detail("Rollback hint", result.Action.RollbackHint)
 		}
 	}
+	ui.NextSteps("Use --json for full structured audit details.", "Keep production profile non-mutating unless policy is explicitly changed.")
 }
 
 func printAgentReport(report *agent.Report) {
-	fmt.Println(report.Summary)
-	fmt.Printf("Goal: %s\n", report.Goal)
-	fmt.Printf("Profile: %s\n", report.Profile)
-	fmt.Printf("Max risk: %s\n", report.MaxRisk)
-	fmt.Printf("Directory: %s\n", report.Directory)
-	fmt.Printf("Status: %s\n", report.Status)
+	ui := newPresenter()
+	ui.Header("Envdoctor Agent", "deterministic local orchestration")
+	ui.Progress(1, 4, "Resolve goal")
+	ui.Progress(2, 4, "Collect context")
+	ui.Progress(3, 4, "Build action plan")
+	ui.Progress(4, 4, "Prepare report")
+	ui.Section("Summary")
+	ui.Row("Result", report.Summary)
+	ui.Row("Goal", report.Goal)
+	ui.Row("Profile", report.Profile)
+	ui.Row("Max risk", report.MaxRisk)
+	ui.Row("Directory", report.Directory)
+	ui.StatusRow("Status", report.Status, "agent report")
 	if report.Diagnostics != nil {
-		fmt.Println("Diagnostics: available")
+		ui.Row("Diagnostics", "available")
 	}
 	if report.ProjectScan != nil {
-		fmt.Printf("Project scan: %s\n", report.ProjectScan.Summary)
+		ui.Row("Project scan", report.ProjectScan.Summary)
 	}
 	if report.FixPlan != nil {
-		fmt.Printf("Fix plan: %s\n", report.FixPlan.Summary)
+		ui.Row("Fix plan", report.FixPlan.Summary)
 	}
 	if report.BootstrapPlan != nil {
-		fmt.Printf("Bootstrap plan: %s\n", report.BootstrapPlan.Summary)
+		ui.Row("Bootstrap plan", report.BootstrapPlan.Summary)
 	}
 	if report.ProjectPlan != nil {
-		fmt.Printf("Project plan: %s\n", report.ProjectPlan.Summary)
+		ui.Row("Project plan", report.ProjectPlan.Summary)
 	}
 	if len(report.Actions) > 0 {
-		fmt.Println("Actions:")
+		ui.Section("Actions")
 		for _, action := range report.Actions {
-			fmt.Printf("- [%s] %s\n", valueOrDash(action.Category), action.Title)
+			ui.Bullet(valueOrDash(action.Category), action.Title)
 			if action.Command != "" {
-				fmt.Printf("  Command: %s\n", strings.Join(append([]string{action.Command}, action.Args...), " "))
+				ui.Detail("Command", commandLine(action.Command, action.Args))
 			}
 			if action.Path != "" {
-				fmt.Printf("  File action: %s %s\n", action.Type, action.Path)
+				ui.Detail("File action", strings.TrimSpace(action.Type+" "+action.Path))
 			}
 			if action.ManualSteps != "" {
-				fmt.Printf("  Manual steps: %s\n", action.ManualSteps)
+				ui.Detail("Manual", action.ManualSteps)
 			}
 		}
 	}
 	if report.Execution != nil {
-		fmt.Println()
 		printExecutionReport(report.Execution)
+		return
 	}
+	ui.NextSteps("Use agent run --dry-run before --yes.", "Use --json to pass the report into IDE or CI wrappers.")
 }
 
 func parseProjectDepsArgs(args []string, flags projectFlags) (string, string, string, error) {
@@ -1315,211 +1413,327 @@ func parseProjectDepsArgs(args []string, flags projectFlags) (string, string, st
 }
 
 func printProjectScan(report *projectops.ScanReport) {
-	fmt.Println(report.Summary)
-	fmt.Printf("Directory: %s\n", report.Directory)
-	fmt.Printf("Status: %s\n", report.Status)
+	ui := newPresenter()
+	ui.Header("Envdoctor Project Scan", "project lifecycle metadata")
+	ui.Progress(1, 3, "Search manifests")
+	ui.Progress(2, 3, "Identify ecosystems")
+	ui.Progress(3, 3, "Summarize managers")
+	ui.Section("Summary")
+	ui.Row("Result", report.Summary)
+	ui.Row("Directory", report.Directory)
+	ui.StatusRow("Status", report.Status, "project scan")
 	if len(report.Ecosystems) > 0 {
-		fmt.Printf("Ecosystems: %s\n", strings.Join(report.Ecosystems, ", "))
+		ui.Row("Ecosystems", strings.Join(report.Ecosystems, ", "))
 	}
 	if len(report.Managers) > 0 {
-		fmt.Printf("Package managers: %s\n", strings.Join(report.Managers, ", "))
+		ui.Row("Package managers", strings.Join(report.Managers, ", "))
+	}
+	ui.Row("Manifests", fmt.Sprint(len(report.Manifests)))
+	if len(report.Manifests) > 0 {
+		ui.Section("Manifests")
 	}
 	for _, manifest := range report.Manifests {
-		fmt.Printf("- %s (%s/%s, %s)\n", manifest.SourceFile, manifest.Ecosystem, manifest.PackageManager, manifest.ValidationStatus)
+		ui.Bullet(manifest.ValidationStatus, manifest.SourceFile)
+		ui.Detail("Ecosystem", manifest.Ecosystem)
+		ui.Detail("Package manager", manifest.PackageManager)
 	}
+	ui.NextSteps("Run envdoctor project deps plan sync to inspect dependency actions.", "Use --json for stable project metadata output.")
 }
 
 func printProjectTemplates(templates []scaffold.Template) {
+	ui := newPresenter()
+	ui.Header("Envdoctor Project Templates", "official starter generators")
 	if len(templates) == 0 {
-		fmt.Println("No scaffold templates are registered.")
+		ui.NextSteps("No scaffold templates are registered.")
 		return
 	}
+	ui.Section("Summary")
+	ui.StatusRow("Status", "safe apply preview", "official-only starter registry")
+	ui.Row("Templates", fmt.Sprint(len(templates)))
+	ui.Section("Templates")
 	fmt.Printf("%-18s %-12s %-18s %-10s %s\n", "Template", "Language", "Framework", "Source", "Summary")
 	for _, template := range templates {
 		fmt.Printf("%-18s %-12s %-18s %-10s %s\n", template.ID, valueOrDash(template.Language), valueOrDash(template.Framework), valueOrDash(template.Source), template.Summary)
 	}
+	ui.NextSteps("Run envdoctor project init plan <template> --create-dir <dir> to preview a starter.", "Missing generators are reported as blocked apply results with install plan hints.")
 }
 
 func printProjectPlan(plan *projectops.Plan) {
-	fmt.Println(plan.Summary)
-	fmt.Printf("Directory: %s\n", plan.Directory)
-	fmt.Printf("Operation: %s\n", plan.Operation)
+	ui := newPresenter()
+	ui.Header("Envdoctor Project Plan", "lifecycle action preview")
+	ui.Progress(1, 3, "Resolve project context")
+	ui.Progress(2, 3, "Build structured actions")
+	ui.Progress(3, 3, "Summarize safety metadata")
+	ui.Section("Summary")
+	ui.Row("Result", plan.Summary)
+	ui.Row("Directory", plan.Directory)
+	ui.Row("Operation", plan.Operation)
 	if plan.Template != "" {
-		fmt.Printf("Template: %s\n", plan.Template)
+		ui.Row("Template", plan.Template)
 	}
 	if plan.Source != "" {
-		fmt.Printf("Source: %s\n", plan.Source)
+		ui.Row("Source", plan.Source)
 	}
 	if plan.Ecosystem != "" {
-		fmt.Printf("Ecosystem: %s\n", plan.Ecosystem)
+		ui.Row("Ecosystem", plan.Ecosystem)
 	}
 	if plan.PackageManager != "" {
-		fmt.Printf("Package manager: %s\n", plan.PackageManager)
+		ui.Row("Package manager", plan.PackageManager)
 	}
 	if plan.RequiresNetwork {
-		fmt.Println("Requires network: yes")
+		ui.Row("Requires network", "yes")
 	}
 	if len(plan.Files) > 0 {
-		fmt.Println("Files:")
+		ui.Section("Files")
 		for _, file := range plan.Files {
-			fmt.Printf("  - %s (%d bytes)\n", file.Path, file.Bytes)
+			ui.Bullet("file", fmt.Sprintf("%s (%d bytes)", file.Path, file.Bytes))
 		}
 	}
+	if len(plan.Actions) > 0 {
+		ui.Section("Actions")
+	}
 	for _, action := range plan.Actions {
-		fmt.Printf("- [%s] %s\n", valueOrDash(action.Status), action.Title)
+		ui.Bullet(valueOrDash(action.Status), action.Title)
 		if action.Command != "" {
-			fmt.Printf("  Command: %s\n", strings.Join(append([]string{action.Command}, action.Args...), " "))
+			ui.Detail("Command", commandLine(action.Command, action.Args))
 		}
 		if action.Type == "mkdir" || action.Type == "write_file" {
-			fmt.Printf("  File action: %s %s\n", action.Type, action.Path)
+			ui.Detail("File action", strings.TrimSpace(action.Type+" "+action.Path))
 			if action.ContentBytes > 0 {
-				fmt.Printf("  Content bytes: %d\n", action.ContentBytes)
+				ui.Detail("Content bytes", fmt.Sprint(action.ContentBytes))
 			}
 		}
 		if action.ManualSteps != "" {
-			fmt.Printf("  Manual steps: %s\n", action.ManualSteps)
+			ui.Detail("Manual", action.ManualSteps)
 		}
 	}
+	ui.NextSteps("Use apply --dry-run to evaluate executor policy.", "Use --json for stable action contracts.")
 }
 
 func printServiceList(report *service.ListReport) {
-	fmt.Printf("Service manager: %s (%s)\n", report.Manager, report.Status)
+	ui := newPresenter()
+	ui.Header("Envdoctor Service List", "read-only native manager inspection")
+	ui.Progress(1, 3, "Detect service manager")
+	ui.Progress(2, 3, "Read service inventory")
+	ui.Progress(3, 3, "Summarize availability")
+	ui.Section("Summary")
+	ui.Row("Service manager", report.Manager)
+	ui.StatusRow("Status", report.Status, "service discovery")
 	if report.Message != "" {
-		fmt.Println(report.Message)
+		ui.Row("Message", report.Message)
 	}
+	ui.Row("Services", fmt.Sprint(len(report.Services)))
 	if len(report.Services) == 0 {
+		ui.NextSteps("Run envdoctor service status <name> when you know the service name.")
 		return
 	}
+	ui.Section("Services")
 	fmt.Printf("%-48s %-14s %s\n", "Service", "State", "Description")
 	for _, svc := range report.Services {
 		fmt.Printf("%-48s %-14s %s\n", svc.Name, valueOrDash(svc.State), svc.Description)
 	}
+	ui.NextSteps("Run envdoctor service diagnose <name> for focused guidance.")
 }
 
 func printServiceInfo(info *service.ServiceInfo) {
-	fmt.Printf("Service: %s\n", info.Name)
-	fmt.Printf("Manager: %s\n", info.Manager)
-	fmt.Printf("Platform: %s\n", info.Platform)
-	fmt.Printf("Status: %s\n", info.Status)
+	ui := newPresenter()
+	ui.Header("Envdoctor Service", "read-only service status")
+	ui.Progress(1, 3, "Select manager")
+	ui.Progress(2, 3, "Read service state")
+	ui.Progress(3, 3, "Prepare guidance")
+	ui.Section("Summary")
+	ui.Row("Service", info.Name)
+	ui.Row("Manager", info.Manager)
+	ui.Row("Platform", info.Platform)
+	ui.StatusRow("Status", info.Status, "service status")
 	if info.State != "" {
-		fmt.Printf("State: %s\n", info.State)
+		ui.Row("State", info.State)
 	}
 	if info.Description != "" {
-		fmt.Printf("Description: %s\n", info.Description)
+		ui.Row("Description", info.Description)
 	}
 	if info.Recommendation != "" {
-		fmt.Printf("Recommendation: %s\n", info.Recommendation)
+		ui.Row("Recommendation", info.Recommendation)
 	}
+	ui.NextSteps("Run envdoctor service plan restart <name> to preview structured service actions.")
 }
 
 func printServicePlan(report *service.PlanReport) {
-	fmt.Println(report.Summary)
-	fmt.Printf("Service: %s\n", report.Service)
-	fmt.Printf("Operation: %s\n", report.Operation)
-	fmt.Printf("Manager: %s\n", report.Manager)
-	fmt.Printf("Status: %s\n", report.Status)
+	ui := newPresenter()
+	ui.Header("Envdoctor Service Plan", "safe service action preview")
+	ui.Progress(1, 3, "Validate service request")
+	ui.Progress(2, 3, "Build native manager actions")
+	ui.Progress(3, 3, "Summarize policy status")
+	ui.Section("Summary")
+	ui.Row("Result", report.Summary)
+	ui.Row("Service", report.Service)
+	ui.Row("Operation", report.Operation)
+	ui.Row("Manager", report.Manager)
+	ui.StatusRow("Status", report.Status, "service operation preview")
+	ui.Section("Actions")
 	for _, action := range report.Actions {
-		fmt.Printf("- [%s] %s\n", action.Status, action.Title)
+		ui.Bullet(action.Status, action.Title)
 		if action.Command != "" {
-			fmt.Printf("  Command: %s\n", strings.Join(append([]string{action.Command}, action.Args...), " "))
+			ui.Detail("Command", commandLine(action.Command, action.Args))
 		}
 		if action.ManualSteps != "" {
-			fmt.Printf("  Manual steps: %s\n", action.ManualSteps)
+			ui.Detail("Manual", action.ManualSteps)
 		}
 		if action.RollbackHint != "" {
-			fmt.Printf("  Rollback hint: %s\n", action.RollbackHint)
+			ui.Detail("Rollback hint", action.RollbackHint)
 		}
 	}
+	ui.NextSteps("Use service apply --dry-run to evaluate policy.", "Production profile blocks service mutation in v1.")
 }
 
 func printVersionScan(report *versionpkg.ScanReport) {
-	fmt.Println(report.Summary)
-	fmt.Println()
-	fmt.Println("Version managers:")
+	ui := newPresenter()
+	ui.Header("Envdoctor Version Scan", "runtime and version-manager review")
+	ui.Progress(1, 3, "Detect version managers")
+	ui.Progress(2, 3, "Read project requirements")
+	ui.Progress(3, 3, "Compare active runtimes")
+	ui.Section("Summary")
+	ui.Row("Result", report.Summary)
+	ui.Row("Directory", report.Directory)
+	ui.Row("Managers", fmt.Sprint(len(report.Managers)))
+	ui.Row("Runtimes", fmt.Sprint(len(report.Runtimes)))
+	ui.Row("Requirements", fmt.Sprint(len(report.Requirements)))
+	ui.Row("Items needing review", fmt.Sprint(len(report.Mismatches)))
+	ui.Section("Version managers")
 	for _, manager := range report.Managers {
-		fmt.Printf("  %-8s found=%t version=%s source=%s\n", manager.Name, manager.Found, valueOrDash(manager.Version), valueOrDash(manager.Source))
+		ui.Bullet(foundStatus(manager.Found), manager.Name)
+		ui.Detail("Version", valueOrDash(manager.Version))
+		ui.Detail("Source", valueOrDash(manager.Source))
 	}
-	fmt.Println()
-	fmt.Println("Runtimes:")
+	ui.Section("Runtimes")
 	for _, runtimeInfo := range report.Runtimes {
-		fmt.Printf("  %-8s found=%t version=%s manager=%s\n", runtimeInfo.Name, runtimeInfo.Found, valueOrDash(runtimeInfo.Version), valueOrDash(runtimeInfo.Manager))
+		ui.Bullet(foundStatus(runtimeInfo.Found), runtimeInfo.Name)
+		ui.Detail("Version", valueOrDash(runtimeInfo.Version))
+		ui.Detail("Manager", valueOrDash(runtimeInfo.Manager))
 	}
 	if len(report.Requirements) > 0 {
-		fmt.Println()
-		fmt.Println("Project requirements:")
+		ui.Section("Project requirements")
 		for _, req := range report.Requirements {
-			fmt.Printf("  %s %s from %s\n", req.Runtime, req.Version, req.SourceFile)
+			ui.Bullet("required", req.Runtime+" "+req.Version)
+			ui.Detail("Source", req.SourceFile)
 		}
 	}
 	if len(report.Mismatches) > 0 {
-		fmt.Println()
-		fmt.Println("Items needing review:")
+		ui.Section("Items needing review")
 		for _, mismatch := range report.Mismatches {
-			fmt.Printf("  [%s] %s required=%s active=%s source=%s\n", mismatch.Status, mismatch.Runtime, mismatch.Required, valueOrDash(mismatch.Active), mismatch.SourceFile)
+			ui.Bullet(mismatch.Status, mismatch.Runtime)
+			ui.Detail("Required", mismatch.Required)
+			ui.Detail("Active", valueOrDash(mismatch.Active))
+			ui.Detail("Source", mismatch.SourceFile)
 		}
 	}
+	ui.NextSteps("Run envdoctor version plan for non-mutating switch/install suggestions.", "Use --json for stable version scan output.")
 }
 
 func printVersionPlan(report *versionpkg.PlanReport) {
-	fmt.Println(report.Summary)
+	ui := newPresenter()
+	ui.Header("Envdoctor Version Plan", "runtime action suggestions")
+	ui.Progress(1, 3, "Read version scan")
+	ui.Progress(2, 3, "Build action candidates")
+	ui.Progress(3, 3, "Summarize risk")
+	ui.Section("Summary")
+	ui.Row("Result", report.Summary)
+	ui.Row("Actions", fmt.Sprint(len(report.Actions)))
+	ui.Section("Actions")
 	for _, action := range report.Actions {
-		fmt.Printf("- %s\n", action.Title)
+		ui.Bullet(valueOrDash(action.Risk), action.Title)
 		if action.Command != "" {
-			fmt.Printf("  Suggested command: %s\n", action.Command)
+			ui.Detail("Suggested command", action.Command)
 		}
 		if action.ManualSteps != "" {
-			fmt.Printf("  Manual steps: %s\n", action.ManualSteps)
+			ui.Detail("Manual", action.ManualSteps)
 		}
 	}
+	ui.NextSteps("Use version apply --dry-run to evaluate executor policy.", "No runtime switch happens from plan output.")
 }
 
 func printInstallPlan(plan *installplan.Plan) {
-	fmt.Println(plan.Summary)
+	ui := newPresenter()
+	ui.Header("Envdoctor Install Plan", "package-manager advisor")
+	ui.Progress(1, 3, "Detect platform")
+	ui.Progress(2, 3, "Resolve package manager")
+	ui.Progress(3, 3, "Build advisory action")
+	ui.Section("Summary")
+	ui.Row("Result", plan.Summary)
 	action := plan.Action
-	fmt.Printf("Tool: %s\n", action.Tool)
-	fmt.Printf("Manager: %s\n", valueOrDash(action.Manager))
-	fmt.Printf("Risk: %s | Requires admin: %t | Safe to run: %t\n", action.Risk, action.RequiresAdmin, action.SafeToRun)
+	ui.Row("Tool", action.Tool)
+	ui.Row("Manager", valueOrDash(action.Manager))
+	ui.Row("Risk", action.Risk)
+	ui.Row("Requires admin", fmt.Sprint(action.RequiresAdmin))
+	ui.Row("Safe to run", fmt.Sprint(action.SafeToRun))
 	if action.Command != "" {
-		fmt.Printf("Suggested command: %s\n", strings.Join(append([]string{action.Command}, action.Args...), " "))
+		ui.Detail("Suggested command", commandLine(action.Command, action.Args))
 	}
 	if action.ManualSteps != "" {
-		fmt.Printf("Manual steps: %s\n", action.ManualSteps)
+		ui.Detail("Manual", action.ManualSteps)
 	}
+	ui.NextSteps("Run envdoctor install apply <tool> --dry-run to inspect policy.", "Envdoctor does not auto-install tools from plan output.")
 }
 
 func printFixPlan(report *fixplan.Report) {
-	fmt.Println(report.Summary)
+	ui := newPresenter()
+	ui.Header("Envdoctor Fix Plan", "safe repair action candidates")
+	ui.Progress(1, 3, "Collect recommendations")
+	ui.Progress(2, 3, "Scan project and runtime signals")
+	ui.Progress(3, 3, "Build action list")
+	ui.Section("Summary")
+	ui.Row("Result", report.Summary)
+	ui.Row("Platform", report.Platform)
+	ui.Row("Actions", fmt.Sprint(len(report.Actions)))
+	ui.Section("Actions")
 	for _, action := range report.Actions {
-		fmt.Printf("- [%s] %s\n", action.Category, action.Title)
+		ui.Bullet(action.Category, action.Title)
+		ui.Detail("Status", action.Status)
+		ui.Detail("Risk", action.Risk)
 		if action.Command != "" {
-			fmt.Printf("  Suggested command: %s\n", action.Command)
+			ui.Detail("Suggested command", action.Command)
 		}
 		if action.ManualSteps != "" {
-			fmt.Printf("  Manual steps: %s\n", action.ManualSteps)
+			ui.Detail("Manual", action.ManualSteps)
 		}
 	}
+	ui.NextSteps("Run envdoctor fix apply --dry-run before considering --yes.", "Use production profile to block mutation by default.")
 }
 
 func printBootstrapPlan(plan *bootstrap.Plan) {
-	fmt.Println(plan.Summary)
+	ui := newPresenter()
+	ui.Header("Envdoctor Bootstrap Plan", "project onboarding setup preview")
+	ui.Progress(1, 3, "Read project metadata")
+	ui.Progress(2, 3, "Infer setup needs")
+	ui.Progress(3, 3, "Build setup actions")
+	ui.Section("Summary")
+	ui.Row("Result", plan.Summary)
+	ui.Row("Directory", plan.Directory)
+	ui.Row("Dependencies", fmt.Sprint(len(plan.Dependencies)))
+	ui.Row("Install plans", fmt.Sprint(len(plan.InstallPlans)))
+	ui.Row("Service hints", fmt.Sprint(len(plan.ServiceHints)))
+	ui.Row("Actions", fmt.Sprint(len(plan.Actions)))
 	if len(plan.ServiceHints) > 0 {
-		fmt.Println("Service hints:")
+		ui.Section("Service hints")
 		for _, hint := range plan.ServiceHints {
-			fmt.Printf("  - %s from %s\n", hint.Name, hint.SourceFile)
+			ui.Bullet("hint", hint.Name)
+			ui.Detail("Source", hint.SourceFile)
+			ui.Detail("Detail", hint.Description)
 		}
 	}
 	if len(plan.Actions) > 0 {
-		fmt.Println("Actions:")
+		ui.Section("Actions")
 		for _, action := range plan.Actions {
-			fmt.Printf("  - [%s] %s\n", action.Category, action.Title)
+			ui.Bullet(action.Category, action.Title)
 			if action.Command != "" {
-				fmt.Printf("    Suggested command: %s\n", action.Command)
+				ui.Detail("Suggested command", action.Command)
 			}
 			if action.ManualSteps != "" {
-				fmt.Printf("    Manual steps: %s\n", action.ManualSteps)
+				ui.Detail("Manual", action.ManualSteps)
 			}
 		}
 	}
+	ui.NextSteps("Run envdoctor bootstrap apply --dry-run to inspect allowlisted setup actions.", "No project setup action runs from plan output.")
 }
 
 func valueOrDash(value string) string {
@@ -1528,4 +1742,18 @@ func valueOrDash(value string) string {
 		return "-"
 	}
 	return value
+}
+
+func commandLine(command string, args []string) string {
+	if command == "" {
+		return ""
+	}
+	return strings.Join(append([]string{command}, args...), " ")
+}
+
+func foundStatus(found bool) string {
+	if found {
+		return "available"
+	}
+	return "not found"
 }

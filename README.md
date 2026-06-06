@@ -388,13 +388,14 @@ Status wording is kept explicit in docs and UI: implemented, read-only, plan-onl
 ### Phase 4G — Interactive CLI UI (Non-Mutating Preview)
 
 ```sh
+envdoctor about
 envdoctor ui
 
 # Deterministic smoke/script mode
 envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 ```
 
-The UI is a terminal menu for Diagnose, Service, Version, Install Plan, Fix Plan, Bootstrap Plan, Snapshot, and Logs. It only runs read-only or plan-only workflows and never executes install, restart, fix, runtime switch, or bootstrap actions.
+The UI is a terminal menu for Diagnose, Service, Version, Install Plan, Fix Plan, Bootstrap Plan, Snapshot, Logs, Project Scan, Agent Plan, and About. It only runs read-only or plan-only workflows and never executes install, restart, fix, runtime switch, or bootstrap actions.
 
 ---
 
@@ -421,13 +422,18 @@ Dependency JSON includes registry metadata for automation and future UI work:
 
 ### Phase 4I — Terminal UI Polish
 
-`envdoctor ui` uses a lightweight stdlib-only terminal interface with ANSI styling, a compact dashboard, status labels, aligned summary rows, and deterministic script mode:
+Human-readable output uses a lightweight stdlib-only terminal presenter with ANSI styling when attached to a terminal. JSON output is unchanged.
 
 ```sh
+envdoctor about
+envdoctor diagnose
+envdoctor agent plan --goal diagnose
+envdoctor project templates
 envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
+envdoctor --plain diagnose
 ```
 
-Set `NO_COLOR=1` to disable ANSI styling. The UI remains non-mutating and does not run install, restart, runtime switch, fix, or bootstrap changes.
+The UI and major non-JSON commands show a title, summary/status section, deterministic stage progress, concise detail rows, and next-step hints. Set `NO_COLOR=1` to disable ANSI styling; use `--plain` to disable ANSI styling and progress bars. The UI remains non-mutating and does not run install, restart, runtime switch, fix, or bootstrap changes.
 
 ---
 
@@ -665,6 +671,7 @@ envdoctor
     ├── executor                 Approval-gated dry-run/apply engine
     ├── projectops               Project init and dependency lifecycle operations
     ├── scaffold                 Official-only project scaffold registry and safe generator actions
+    ├── terminalui               Shared friendly non-JSON terminal presenter
     ├── agent                    Deterministic local autonomous orchestration preview
     └── cliui                    Interactive non-mutating CLI UI
 ```
@@ -710,8 +717,12 @@ go run ./cmd/envdoctor bootstrap apply --dry-run --json <fixture-dir>
 go run ./cmd/envdoctor fix apply --dry-run --json --profile development
 go run ./cmd/envdoctor fix apply --dry-run --json --profile production
 go run ./cmd/envdoctor install apply python --dry-run --json --profile production
+go run ./cmd/envdoctor about
+go run ./cmd/envdoctor diagnose
+go run ./cmd/envdoctor --plain diagnose
 go run ./cmd/envdoctor project scan --json <fixture-dir>
 go run ./cmd/envdoctor project templates --json
+go run ./cmd/envdoctor project templates
 go run ./cmd/envdoctor project init plan node --json <empty-dir>
 go run ./cmd/envdoctor project init apply go --dry-run --json <empty-dir>
 go run ./cmd/envdoctor project init plan react-vite --json <empty-dir>
@@ -746,7 +757,7 @@ go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 | **Phase 4F** | ✅ CLI UX Stabilized | JSON output for legacy scan commands and explicit status wording |
 | **Phase 4G** | ✅ Non-Mutating UI Preview | Interactive CLI menu for read-only and plan-only workflows |
 | **Phase 4H** | ✅ Metadata Registry Implemented | Broad dependency manifest registry with metadata-only coverage |
-| **Phase 4I** | ✅ UI Polish Implemented | ANSI dashboard and stable stdlib terminal UI |
+| **Phase 4I** | ✅ Friendly CLI UX Implemented | Shared terminal presenter, about command, progress bars, ANSI dashboard, `--plain` |
 | **Phase 5** | ✅ CI + IDE Wrapper Preview | GitHub Actions check/smoke/release workflow; VSCode and JetBrains CLI wrappers |
 | **Phase 5B** | ✅ Release Packaging Implemented | GoReleaser archives, checksums, Linux packages, and package-manager metadata |
 | **Phase 5C** | ✅ Safe Execution Preview | Approval-gated `apply` commands, dry-run default, audit log, pre-apply snapshot |

@@ -178,6 +178,23 @@ smoke:
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) scan dependencies "$(SMOKE_DIR)/node" >/dev/null
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) scan dependencies "$(SMOKE_DIR)/go" >/dev/null
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) scan dependencies "$(DEPENDENCY_SMOKE_DIR)" >/dev/null
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) about > "$(SMOKE_DIR)/about.txt"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) diagnose > "$(SMOKE_DIR)/diagnose.txt"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) agent plan --goal diagnose > "$(SMOKE_DIR)/agent-plan.txt"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) project templates > "$(SMOKE_DIR)/project-templates.txt"
+	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) --plain diagnose > "$(SMOKE_DIR)/diagnose-plain.txt"
+	@grep -q 'Envdoctor' "$(SMOKE_DIR)/about.txt"
+	@grep -q 'Progress:' "$(SMOKE_DIR)/diagnose.txt"
+	@grep -q 'Next steps' "$(SMOKE_DIR)/agent-plan.txt"
+	@grep -q 'Project Templates' "$(SMOKE_DIR)/project-templates.txt"
+	@if grep -q 'Progress:' "$(SMOKE_DIR)/diagnose-plain.txt"; then \
+		printf 'Plain output unexpectedly contains progress bars.\n'; \
+		exit 1; \
+	fi
+	@if LC_ALL=C grep "$$(printf '\033')" "$(SMOKE_DIR)/diagnose-plain.txt" >/dev/null; then \
+		printf 'Plain output unexpectedly contains ANSI escape codes.\n'; \
+		exit 1; \
+	fi
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) system --json > "$(SMOKE_DIR)/system.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) scan toolchain --json > "$(SMOKE_DIR)/toolchain.json"
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) scan path --json > "$(SMOKE_DIR)/path.json"
@@ -299,6 +316,9 @@ smoke:
 	@GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run $(PKG) ui --script "diagnose,version:$(SMOKE_DIR)/version,fix:$(SMOKE_DIR)/version,bootstrap:$(SMOKE_DIR)/bootstrap,exit" > "$(SMOKE_DIR)/ui.txt"
 	@grep -q 'Envdoctor Dashboard' "$(SMOKE_DIR)/ui.txt"
 	@grep -q 'Menu' "$(SMOKE_DIR)/ui.txt"
+	@grep -q 'About' "$(SMOKE_DIR)/ui.txt"
+	@grep -q 'Progress:' "$(SMOKE_DIR)/ui.txt"
+	@grep -q 'Next steps' "$(SMOKE_DIR)/ui.txt"
 	@if grep -Eiq 'executed|installed|restarted|fixed' "$(SMOKE_DIR)/ui.txt"; then \
 		printf 'UI smoke output contains mutating action wording.\n'; \
 		exit 1; \
