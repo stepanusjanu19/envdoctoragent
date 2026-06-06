@@ -669,6 +669,53 @@ Behavior:
 
 ---
 
+### Phase 6C — Pre-RAG Completion Gate
+
+Phase 6C is the repository and release-readiness gate before any RAG or AI knowledge layer work starts. It does not add a new executor path.
+
+Completion requirements:
+- `PLAN.md` is the canonical versioned roadmap; `PLAN2.md` and `PLAN3.md` remain ignored personal reference notes.
+- Local verification must pass: `gofmt -l $(git ls-files '*.go')`, `git diff --check`, `make check`, `make smoke`, `make release-check`, `make release`, and `rg --files -g '*_test.go'`.
+- Release snapshots must produce Linux, macOS, and Windows archives, Linux native packages, checksums, and package-manager metadata under `dist/`.
+- GitHub Actions must be green on Linux, macOS, and Windows before a final tag is treated as release-ready.
+- Remaining `Preview` labels are intentional safety boundaries, not missing implementation: production mutation, service fix automation, AI auto-fix, and remote/cloud mutation remain blocked.
+
+---
+
+### Phase 7A — Local RAG / Knowledge Layer
+
+Local RAG is implemented as a read-only lexical knowledge layer above the existing deterministic scans and audited plans. It does not use a GPU, local model, LLM provider, network service, or vector database.
+
+```sh
+envdoctor rag index [directory] --output <file>
+envdoctor rag query "why is my environment unhealthy?" [directory]
+envdoctor rag query --index .envdoctor/rag/index.json "dependency issues"
+envdoctor rag context [directory] --goal diagnose
+```
+
+Supported inputs:
+- scan JSON, log analyzer results, recommendations, project manifests, release metadata, local docs, and audit summaries.
+- optional log files via repeated `--log <file>`.
+- redacted audit summaries via `--include-audit`.
+
+Supported outputs:
+- explanation, ranked diagnosis, and suggested plan amendments.
+- JSON fields: `status`, `directory`, `query`, `generated_at`, `sources`, `matches`, `answer`, `limitations`, `next_steps`, and `safety`.
+
+Hard boundaries:
+- RAG must not call the executor directly.
+- RAG must not generate shell execution paths that bypass structured actions.
+- Any mutating action proposed by RAG must still go through `plan`/`apply`, dry-run default, `--yes`, executor allowlist, audit log, snapshot, profile policy, and production mutation block.
+- Remote/cloud RAG starts read-only and must not mutate remote systems until a separate policy and rollback model exists.
+
+---
+
+### Phase 7B+ — Future AI / Remote / Multi-Agent
+
+Future AI can use the Phase 7A context pack as input for explanation and ranking, but it must not replace deterministic scans or call the executor. Vector embeddings, remote/cloud validation, and multi-agent AI remain future work after local RAG contracts are stable.
+
+---
+
 ### Phase 5 Integration — IDE CLI Wrappers
 
 The IDE integration preview keeps Envdoctor as the single engine and wraps CLI JSON output:
@@ -713,6 +760,7 @@ envdoctor
     ├── terminalui               Shared friendly non-JSON terminal presenter
     ├── agent                    Deterministic local autonomous orchestration preview
     ├── automation               Controlled automation orchestration over agent/executor
+    ├── rag                      Local read-only lexical knowledge layer
     └── cliui                    Interactive non-mutating CLI UI
 ```
 
@@ -781,6 +829,10 @@ go run ./cmd/envdoctor automation plan --json --goal diagnose --profile developm
 go run ./cmd/envdoctor automation plan --json --goal maintain <fixture-dir>
 go run ./cmd/envdoctor automation run --dry-run --json --goal repair <fixture-dir>
 go run ./cmd/envdoctor automation run --yes --json --profile production --goal scaffold --template go --create-dir <new-dir>
+go run ./cmd/envdoctor rag index --json --output .cache/smoke/rag-index.json .
+go run ./cmd/envdoctor rag query --json "why is my environment unhealthy?" .
+go run ./cmd/envdoctor rag query --json --index .cache/smoke/rag-index.json "dependency issues"
+go run ./cmd/envdoctor rag context --json --goal diagnose .
 go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 ```
 
@@ -810,7 +862,9 @@ go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 | **Phase 5F** | ✅ Policy Hardening Preview | Development/production profiles, max-risk policy, policy audit metadata, structured install actions |
 | **Phase 6A** | ✅ Autonomous Agent Preview | Local deterministic agent plan/run over diagnose/onboard/repair/scaffold/bootstrap goals |
 | **Phase 6B** | ✅ Controlled Automation Finalize | Automation plan/run, maintain goal, policy summary, production mutation block |
-| **Phase 6C+** | 🚧 Future AI / Remote | AI troubleshooting, autonomous auto-fix, service fix automation, multi-agent diagnostics, remote/cloud validation |
+| **Phase 6C** | ✅ Pre-RAG Completion Gate | Canonical roadmap, verification gate, release artifact expectation, Windows CI requirement, RAG boundary documented |
+| **Phase 7A** | ✅ Local RAG Implemented | Stdlib lexical index over scan JSON, logs, docs, audit summaries, manifests, and release metadata |
+| **Phase 7B+** | 🚧 Future AI / Remote | Optional AI explain layer, vector embeddings, remote/cloud validation, and multi-agent diagnostics |
 
 ---
 

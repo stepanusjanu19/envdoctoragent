@@ -21,6 +21,7 @@ import (
 	"github.com/stepanusjanu19/envdoctoragent/internal/fixplan"
 	"github.com/stepanusjanu19/envdoctoragent/internal/installplan"
 	"github.com/stepanusjanu19/envdoctoragent/internal/projectops"
+	"github.com/stepanusjanu19/envdoctoragent/internal/rag"
 	"github.com/stepanusjanu19/envdoctoragent/internal/recommendation"
 	"github.com/stepanusjanu19/envdoctoragent/internal/scaffold"
 	"github.com/stepanusjanu19/envdoctoragent/internal/scanner"
@@ -1026,6 +1027,88 @@ Supports Linux, Windows, and macOS.`,
 	addAutomationFlags(automationRunCmd, &automationRunFlags, true)
 	automationCmd.AddCommand(automationPlanCmd, automationRunCmd)
 
+	// rag command (local read-only knowledge layer)
+	var ragCmd = &cobra.Command{
+		Use:   "rag",
+		Short: "Build and query a local read-only RAG knowledge layer",
+	}
+	var ragIndexFlags ragCommandFlags
+	var ragIndexCmd = &cobra.Command{
+		Use:   "index [directory]",
+		Short: "Build a local lexical RAG index without executing actions",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			report, err := rag.CreateIndex(ragOptions(ragIndexFlags, dir, ""))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error building RAG index: %v\n", err)
+				os.Exit(1)
+			}
+			if ragIndexFlags.JSON {
+				printJSON(report)
+			} else {
+				printRAGIndexReport(report)
+			}
+		},
+	}
+	addRAGCollectionFlags(ragIndexCmd, &ragIndexFlags)
+	ragIndexCmd.Flags().StringVar(&ragIndexFlags.Output, "output", "", "Write index JSON to this file")
+
+	var ragQueryFlags ragCommandFlags
+	var ragQueryCmd = &cobra.Command{
+		Use:   "query <question> [directory]",
+		Short: "Query local RAG context with lexical retrieval",
+		Args:  cobra.RangeArgs(1, 2),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 1 {
+				dir = args[1]
+			}
+			report, err := rag.Query(ragOptions(ragQueryFlags, dir, args[0]))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error querying RAG context: %v\n", err)
+				os.Exit(1)
+			}
+			if ragQueryFlags.JSON {
+				printJSON(report)
+			} else {
+				printRAGQueryReport(report)
+			}
+		},
+	}
+	addRAGCollectionFlags(ragQueryCmd, &ragQueryFlags)
+	addRAGQueryFlags(ragQueryCmd, &ragQueryFlags)
+
+	var ragContextFlags ragCommandFlags
+	var ragContextCmd = &cobra.Command{
+		Use:   "context [directory]",
+		Short: "Build a goal-specific local RAG context pack",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := "."
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			report, err := rag.Context(ragOptions(ragContextFlags, dir, ""))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating RAG context: %v\n", err)
+				os.Exit(1)
+			}
+			if ragContextFlags.JSON {
+				printJSON(report)
+			} else {
+				printRAGQueryReport(report)
+			}
+		},
+	}
+	addRAGCollectionFlags(ragContextCmd, &ragContextFlags)
+	addRAGQueryFlags(ragContextCmd, &ragContextFlags)
+	ragContextCmd.Flags().StringVar(&ragContextFlags.Goal, "goal", "diagnose", "Context goal: diagnose, onboard, repair, or maintain")
+	ragCmd.AddCommand(ragIndexCmd, ragQueryCmd, ragContextCmd)
+
 	// ui command (interactive, non-mutating)
 	var uiScript string
 	var uiCmd = &cobra.Command{
@@ -1047,7 +1130,7 @@ Supports Linux, Windows, and macOS.`,
 	}
 	uiCmd.Flags().StringVar(&uiScript, "script", "", "Run comma-separated UI actions for smoke checks, e.g. diagnose,fix,exit")
 
-	rootCmd.AddCommand(aboutCmd, systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd, serviceCmd, versionCmd, installCmd, fixCmd, bootstrapCmd, projectCmd, agentCmd, automationCmd, uiCmd)
+	rootCmd.AddCommand(aboutCmd, systemCmd, scanCmd, diagnoseCmd, snapshotCmd, explainCmd, compareCmd, dockerizeCmd, recommendCmd, serviceCmd, versionCmd, installCmd, fixCmd, bootstrapCmd, projectCmd, agentCmd, automationCmd, ragCmd, uiCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1199,6 +1282,17 @@ type automationCommandFlags struct {
 	AllowNonEmpty bool
 }
 
+type ragCommandFlags struct {
+	JSON         bool
+	Output       string
+	Index        string
+	Query        string
+	Goal         string
+	TopK         int
+	IncludeAudit bool
+	Logs         []string
+}
+
 func addExecutionFlags(command *cobra.Command, flags *executionFlags) {
 	command.Flags().BoolVar(&flags.DryRun, "dry-run", true, "Preview actions without executing them")
 	command.Flags().BoolVar(&flags.Yes, "yes", false, "Approve execution of allowlisted actions")
@@ -1208,6 +1302,17 @@ func addExecutionFlags(command *cobra.Command, flags *executionFlags) {
 	command.Flags().StringVar(&flags.Profile, "profile", executor.ProfileDevelopment, "Execution policy profile: development or production")
 	command.Flags().StringVar(&flags.MaxRisk, "max-risk", executor.RiskHigh, "Maximum action risk allowed by policy: low, medium, or high")
 	command.Flags().StringVar(&flags.PolicyFile, "policy-file", "", "Optional JSON policy file")
+}
+
+func addRAGCollectionFlags(command *cobra.Command, flags *ragCommandFlags) {
+	command.Flags().BoolVar(&flags.JSON, "json", false, "Output in JSON format")
+	command.Flags().BoolVar(&flags.IncludeAudit, "include-audit", false, "Include redacted local audit summaries")
+	command.Flags().StringArrayVar(&flags.Logs, "log", nil, "Add a specific log file to the local RAG context")
+}
+
+func addRAGQueryFlags(command *cobra.Command, flags *ragCommandFlags) {
+	command.Flags().StringVar(&flags.Index, "index", "", "Read an existing RAG index JSON instead of building in memory")
+	command.Flags().IntVar(&flags.TopK, "top-k", rag.DefaultTopK, "Number of ranked matches to return")
 }
 
 func addAgentFlags(command *cobra.Command, flags *agentCommandFlags, includeExecution bool) {
@@ -1328,6 +1433,19 @@ func automationOptions(flags automationCommandFlags, dir string) automation.Opti
 			CreateDir:     flags.CreateDir,
 			AllowNonEmpty: flags.AllowNonEmpty,
 		},
+	}
+}
+
+func ragOptions(flags ragCommandFlags, dir, query string) rag.Options {
+	return rag.Options{
+		Directory:    dir,
+		Output:       flags.Output,
+		Index:        flags.Index,
+		Query:        query,
+		Goal:         flags.Goal,
+		TopK:         flags.TopK,
+		IncludeAudit: flags.IncludeAudit,
+		Logs:         flags.Logs,
 	}
 }
 
@@ -1546,6 +1664,77 @@ func printAutomationReport(report *automation.Report) {
 		return
 	}
 	ui.NextSteps("Use automation run --dry-run before --yes.", "Production profile remains non-mutating by default.")
+}
+
+func printRAGIndexReport(report *rag.IndexReport) {
+	ui := newPresenter()
+	ui.Header("Envdoctor RAG", "local read-only knowledge index")
+	ui.Progress(1, 3, "Collect deterministic context")
+	ui.Progress(2, 3, "Build lexical index")
+	ui.Progress(3, 3, "Write local index")
+	ui.Section("Summary")
+	ui.Row("Result", report.Summary)
+	ui.Row("Directory", report.Directory)
+	ui.Row("Output", report.Output)
+	ui.Row("Sources", fmt.Sprint(len(report.Sources)))
+	ui.StatusRow("Status", report.Status, "read-only RAG")
+	if len(report.Limitations) > 0 {
+		ui.Section("Limitations")
+		for _, limitation := range report.Limitations {
+			ui.Bullet("note", limitation)
+		}
+	}
+	printRAGSafety(ui, report.Safety)
+	ui.NextSteps("Run envdoctor rag query \"<question>\" --index "+report.Output, "RAG is retrieval-only and cannot execute actions.")
+}
+
+func printRAGQueryReport(report *rag.QueryReport) {
+	ui := newPresenter()
+	ui.Header("Envdoctor RAG", "local read-only knowledge query")
+	ui.Progress(1, 3, "Collect or load context")
+	ui.Progress(2, 3, "Rank lexical matches")
+	ui.Progress(3, 3, "Prepare safety-bounded answer")
+	ui.Section("Summary")
+	ui.Row("Answer", report.Answer)
+	ui.Row("Directory", report.Directory)
+	if report.Goal != "" {
+		ui.Row("Goal", report.Goal)
+	}
+	ui.Row("Query", report.Query)
+	ui.Row("Sources", fmt.Sprint(len(report.Sources)))
+	ui.Row("Matches", fmt.Sprint(len(report.Matches)))
+	ui.StatusRow("Status", report.Status, "read-only RAG")
+	if len(report.Matches) > 0 {
+		ui.Section("Ranked matches")
+		for _, match := range report.Matches {
+			ui.Bullet(fmt.Sprintf("%.2f", match.Score), match.Title)
+			ui.Detail("Source", match.Source)
+			ui.Detail("Type", match.SourceType)
+			if match.Snippet != "" {
+				ui.Detail("Snippet", match.Snippet)
+			}
+		}
+	}
+	if len(report.Limitations) > 0 {
+		ui.Section("Limitations")
+		for _, limitation := range report.Limitations {
+			ui.Bullet("note", limitation)
+		}
+	}
+	printRAGSafety(ui, report.Safety)
+	if len(report.NextSteps) > 0 {
+		ui.NextSteps(report.NextSteps...)
+	}
+}
+
+func printRAGSafety(ui *terminalui.Presenter, safety rag.Safety) {
+	ui.Section("Safety")
+	ui.Row("Read only", fmt.Sprint(safety.ReadOnly))
+	ui.Row("Executor access", fmt.Sprint(safety.ExecutorAccess))
+	ui.Row("Mutating actions", fmt.Sprint(safety.MutatingActions))
+	for _, note := range safety.Notes {
+		ui.Detail("Note", note)
+	}
 }
 
 func parseProjectDepsArgs(args []string, flags projectFlags) (string, string, string, error) {

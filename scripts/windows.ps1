@@ -695,6 +695,23 @@ function Invoke-Smoke {
     if (-not ($automationProdReport.execution.policy_decisions | Where-Object { $_.allowed -eq $false })) {
         throw "Production automation scaffold did not report a policy block"
     }
+    $ragIndexPath = Join-Path $SmokeDir "rag-index.json"
+    $ragIndexReport = Invoke-GoOutput @("run", $Pkg, "rag", "index", "--json", "--output", $ragIndexPath, $Root)
+    if (-not (Test-Path $ragIndexPath) -or (Get-Item $ragIndexPath).Length -eq 0) {
+        throw "RAG index was not created: $ragIndexPath"
+    }
+    $ragQuery = Invoke-GoOutput @("run", $Pkg, "rag", "query", "--json", "why is my environment unhealthy?", $Root)
+    $ragQueryIndex = Invoke-GoOutput @("run", $Pkg, "rag", "query", "--json", "--index", $ragIndexPath, "dependency issues")
+    $ragContext = Invoke-GoOutput @("run", $Pkg, "rag", "context", "--json", "--goal", "diagnose", $Root)
+    $ragQueryReport = $ragQuery | ConvertFrom-Json
+    if (-not $ragQueryReport.safety.read_only -or $ragQueryReport.safety.executor_access -or $ragQueryReport.safety.mutating_actions) {
+        throw "RAG query did not report read-only safety boundaries"
+    }
+    $ragImport = Get-ChildItem -Path (Join-Path $Root "internal/rag") -Recurse -Filter "*.go" |
+        Select-String -Pattern "internal/executor" -Quiet
+    if ($ragImport) {
+        throw "RAG package imported executor directly"
+    }
     foreach ($auditPath in @($fixApplyAudit, $fixApplyDevAudit, $fixApplyProdAudit, $installApplyAudit, $installApplyProdAudit, $serviceApplyAudit, $serviceApplyProdAudit, $versionApplyAudit, $bootstrapApplyAudit)) {
         if (-not (Test-Path $auditPath) -or (Get-Item $auditPath).Length -eq 0) {
             throw "Apply audit log was not created: $auditPath"
@@ -783,6 +800,11 @@ function Invoke-Smoke {
     $automationPlanScaffold | ConvertFrom-Json | Out-Null
     $automationRunRepair | ConvertFrom-Json | Out-Null
     $automationRunProdBlock | ConvertFrom-Json | Out-Null
+    $ragIndexReport | ConvertFrom-Json | Out-Null
+    Get-Content -Raw -Path $ragIndexPath | ConvertFrom-Json | Out-Null
+    $ragQuery | ConvertFrom-Json | Out-Null
+    $ragQueryIndex | ConvertFrom-Json | Out-Null
+    $ragContext | ConvertFrom-Json | Out-Null
 
     Invoke-GoOutput @("run", $Pkg, "dockerize", $nodeDir) |
         Set-Content -Path (Join-Path $SmokeDir "Dockerfile.preview") -Encoding UTF8
