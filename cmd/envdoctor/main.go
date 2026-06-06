@@ -1049,7 +1049,7 @@ func addAgentFlags(command *cobra.Command, flags *agentCommandFlags, includeExec
 	command.Flags().StringVar(&flags.Name, "name", "", "Project display/package name for scaffold templates")
 	command.Flags().StringVar(&flags.Module, "module", "", "Module path for scaffold templates")
 	command.Flags().StringVar(&flags.PackageName, "package", "", "Package or namespace for scaffold templates")
-	command.Flags().StringVar(&flags.Source, "source", "auto", "Scaffold source: auto, internal, official, or manual")
+	command.Flags().StringVar(&flags.Source, "source", "auto", "Scaffold source: auto or official (official-only)")
 	command.Flags().BoolVar(&flags.CreateDir, "create-dir", false, "Create the target project directory when it does not exist")
 	command.Flags().BoolVar(&flags.Force, "force", false, "Allow scaffold file overwrite when safe")
 	command.Flags().BoolVar(&flags.AllowNonEmpty, "allow-non-empty", false, "Allow scaffold planning/apply in a non-empty directory")
@@ -1078,7 +1078,7 @@ func addScaffoldFlags(command *cobra.Command, flags *projectFlags, includeJSON b
 	command.Flags().StringVar(&flags.Name, "name", "", "Project display/package name for scaffold templates")
 	command.Flags().StringVar(&flags.Module, "module", "", "Module path for Go/JVM-style scaffold templates")
 	command.Flags().StringVar(&flags.PackageName, "package", "", "Package or namespace for scaffold templates")
-	command.Flags().StringVar(&flags.Source, "source", "auto", "Scaffold source: auto, internal, official, or manual")
+	command.Flags().StringVar(&flags.Source, "source", "auto", "Scaffold source: auto or official (official-only)")
 	command.Flags().BoolVar(&flags.Force, "force", false, "Allow scaffold file overwrite when safe")
 	command.Flags().BoolVar(&flags.CreateDir, "create-dir", false, "Create the target project directory when it does not exist")
 }

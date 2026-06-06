@@ -486,9 +486,9 @@ Useful flags:
 --allow-non-empty
 ```
 
-Supported init templates include `node`, `react-vite`, `next`, `vue-vite`, `sveltekit`, `express`, `nestjs`, `python`, `go`, `rust`, `php`, `java-maven`, `java-gradle`, `dotnet`, `dart`, `flutter`, `swift`, and `elixir`.
+Project initialization templates are official-only. Active starter templates use official ecosystem/framework generators; templates without a safe official generator are hidden from `project templates` and rejected if requested directly.
 
-Dependency operations cover Node.js package managers, Python pip, Go modules, Cargo, Composer, Maven/Gradle sync, .NET packages, Dart pub, Bundler, SwiftPM sync, and Mix sync. Ecosystems without a safe command mapping return manual or metadata-only actions instead of executing arbitrary shell commands.
+Dependency operations cover Node.js package managers, Python pip, Go modules, Cargo, Composer, Maven/Gradle sync, .NET packages, Dart pub, Bundler, SwiftPM sync, and Mix sync. Ecosystems without a safe command mapping return blocked or metadata-only actions instead of executing arbitrary shell commands.
 
 Safety behavior:
 - `project init apply` is blocked for non-empty directories unless `--allow-non-empty` is passed.
@@ -501,15 +501,16 @@ Safety behavior:
 
 ### Phase 5E — Project Scaffolding Agent
 
-Project initialization now uses a hybrid scaffold registry. Internal templates write deterministic starter files through safe file actions, while official generators remain available through structured `command` + `args` where they are non-interactive enough to expose safely.
+Project initialization now uses an official-only scaffold registry. Envdoctor plans official ecosystem/framework generators as structured `command` + `args` actions and does not expose internal/manual starter templates in the command surface.
 
 ```sh
 envdoctor project templates
 envdoctor project templates --json
 
-envdoctor project init plan react-vite --json <project-dir>
-envdoctor project init apply go-web --dry-run --json <project-dir>
-envdoctor project init apply python-cli --yes --create-dir <new-project-dir>
+envdoctor project init plan react-vite --json --create-dir <project-dir>
+envdoctor project init plan laravel --json --create-dir <project-dir>
+envdoctor project init apply go --dry-run --json --create-dir <project-dir>
+envdoctor project init apply go --yes --json --create-dir <new-project-dir>
 ```
 
 Scaffold flags:
@@ -518,33 +519,32 @@ Scaffold flags:
 --name my-app
 --module github.com/acme/my-app
 --package com.acme.app
---source auto|internal|official|manual
+--source auto|official
 --create-dir
 --force
 --allow-non-empty
 ```
 
-Supported scaffold templates include:
+Active official scaffold templates include:
 
 ```text
-node, express, react-vite, vue-vite, next, sveltekit, nestjs,
-python, python-cli, fastapi, flask,
-go, go-module, go-cli, go-web,
-rust, rust-cli, rust-lib, rust-web,
-php, php-composer, laravel,
-java-maven, java-gradle, kotlin-gradle, spring-boot,
+node, react-vite, vue-vite, next, sveltekit, nestjs,
+go, go-module,
+rust, rust-cli, rust-lib,
+laravel,
 dotnet, dotnet-console, dotnet-webapi,
 dart, dart-console, flutter, flutter-app,
-swift, elixir, ruby, c-cli, cpp-cli, lua, r, julia, haskell, perl
+swift, elixir
 ```
 
 Safety behavior:
-- Internal scaffold actions use `type=mkdir` and `type=write_file`; they do not execute shell commands.
-- File actions can only write inside the target project directory.
+- `--source auto` selects the official generator. `--source internal` and `--source manual` are rejected.
+- Envdoctor does not auto-install missing generators; apply output is blocked and includes an `envdoctor install plan <tool>` hint.
+- `--create-dir` uses a safe project-local `mkdir` action when the target directory does not exist.
 - Path traversal, absolute paths, symlink project roots/components, delete commands, and shell operators are blocked.
-- Existing files are not overwritten unless `--force` is passed.
+- Known generated manifest files are guarded and are not overwritten unless `--force` is passed.
 - `--create-dir` is required when the target directory does not exist.
-- Official generators that are missing from PATH return structured blocked results during apply instead of crashing.
+- Templates without a stable official generator, such as `go-web`, are hidden from `project templates` and rejected if requested directly.
 - AI-generated project synthesis remains future work.
 
 ---
@@ -601,7 +601,7 @@ Agent goals:
 --goal diagnose
 --goal onboard
 --goal repair
---goal scaffold --template go-web --create-dir
+--goal scaffold --template react-vite --create-dir
 --goal bootstrap
 ```
 
@@ -611,8 +611,8 @@ Examples:
 envdoctor agent plan --json --goal diagnose --profile development
 envdoctor agent plan --json --goal onboard <project-dir>
 envdoctor agent run --dry-run --json --goal repair <project-dir>
-envdoctor agent run --yes --json --goal scaffold --template python-cli --create-dir <new-dir>
-envdoctor agent run --yes --json --profile production --goal scaffold --template python-cli --create-dir <new-dir>
+envdoctor agent run --yes --json --goal scaffold --template go --create-dir <new-dir>
+envdoctor agent run --yes --json --profile production --goal scaffold --template go --create-dir <new-dir>
 ```
 
 Behavior:
@@ -664,7 +664,7 @@ envdoctor
     ├── bootstrap                Project bootstrap planning
     ├── executor                 Approval-gated dry-run/apply engine
     ├── projectops               Project init and dependency lifecycle operations
-    ├── scaffold                 Hybrid project scaffold registry and safe file actions
+    ├── scaffold                 Official-only project scaffold registry and safe generator actions
     ├── agent                    Deterministic local autonomous orchestration preview
     └── cliui                    Interactive non-mutating CLI UI
 ```
@@ -715,16 +715,17 @@ go run ./cmd/envdoctor project templates --json
 go run ./cmd/envdoctor project init plan node --json <empty-dir>
 go run ./cmd/envdoctor project init apply go --dry-run --json <empty-dir>
 go run ./cmd/envdoctor project init plan react-vite --json <empty-dir>
-go run ./cmd/envdoctor project init apply go-web --dry-run --json <empty-dir>
-go run ./cmd/envdoctor project init apply python-cli --yes --json --create-dir <new-dir>
+go run ./cmd/envdoctor project init plan laravel --json --create-dir <empty-dir>
+go run ./cmd/envdoctor project init apply react-vite --dry-run --json --create-dir <empty-dir>
 go run ./cmd/envdoctor project deps plan sync --json <fixture-dir>
+go run ./cmd/envdoctor project deps plan sync --ecosystem go --json <fixture-dir>
 go run ./cmd/envdoctor project deps plan install lodash --ecosystem node --json <fixture-dir>
 go run ./cmd/envdoctor project deps apply sync --dry-run --json <fixture-dir>
 go run ./cmd/envdoctor agent plan --json --goal diagnose --profile development
 go run ./cmd/envdoctor agent plan --json --goal onboard <fixture-dir>
-go run ./cmd/envdoctor agent plan --json --goal scaffold --template go-web --create-dir <new-dir>
+go run ./cmd/envdoctor agent plan --json --goal scaffold --template react-vite --create-dir <new-dir>
 go run ./cmd/envdoctor agent run --dry-run --json --goal repair <fixture-dir>
-go run ./cmd/envdoctor agent run --yes --json --profile production --goal scaffold --template python-cli --create-dir <new-dir>
+go run ./cmd/envdoctor agent run --yes --json --profile production --goal scaffold --template go --create-dir <new-dir>
 go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 ```
 
@@ -750,7 +751,7 @@ go run ./cmd/envdoctor ui --script "diagnose,version,fix,bootstrap,exit"
 | **Phase 5B** | ✅ Release Packaging Implemented | GoReleaser archives, checksums, Linux packages, and package-manager metadata |
 | **Phase 5C** | ✅ Safe Execution Preview | Approval-gated `apply` commands, dry-run default, audit log, pre-apply snapshot |
 | **Phase 5D** | ✅ Project Lifecycle Preview | Project scan/init/deps plan and approval-gated dependency operations |
-| **Phase 5E** | ✅ Project Scaffolding Preview | Hybrid starter boilerplate registry, safe file actions, official/manual scaffold fallback |
+| **Phase 5E** | ✅ Official Scaffolding Preview | Official-only starter registry with structured generator actions and guarded manifests |
 | **Phase 5F** | ✅ Policy Hardening Preview | Development/production profiles, max-risk policy, policy audit metadata, structured install actions |
 | **Phase 6A** | ✅ Autonomous Agent Preview | Local deterministic agent plan/run over diagnose/onboard/repair/scaffold/bootstrap goals |
 | **Phase 6B+** | 🚧 Future AI / Remote | AI troubleshooting, autonomous auto-fix, service fix automation, multi-agent diagnostics, remote/cloud validation |

@@ -88,11 +88,14 @@ type templateDef struct {
 	ManualSteps     string
 }
 
-// List returns supported scaffold templates with default metadata.
+// List returns official-only scaffold templates with default metadata.
 func List() []Template {
 	defs := registry()
 	keys := make([]string, 0, len(defs))
-	for key := range defs {
+	for key, def := range defs {
+		if def.Official == nil {
+			continue
+		}
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
@@ -100,7 +103,7 @@ func List() []Template {
 	for _, key := range keys {
 		def := defs[key]
 		ctx := defaultContext(def.ID, "")
-		templates = append(templates, def.metadata(ctx, def.DefaultSource))
+		templates = append(templates, def.metadata(ctx, SourceOfficial))
 	}
 	return templates
 }
@@ -137,34 +140,22 @@ func Generate(template, dir string, options Options) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateOfficialGuards(absDir, officialGuardFiles(def, ctx), options.Force); err != nil {
+		return nil, err
+	}
 
-	var files []fileTemplate
 	var actions []executor.Action
 	if !exists && options.CreateDir {
 		actions = append(actions, mkdirAction("Create project directory", "."))
 	}
 
-	switch source {
-	case SourceInternal:
-		files = def.Internal(ctx)
-		if err := validateFiles(absDir, files, options.Force); err != nil {
-			return nil, err
-		}
-		for _, file := range files {
-			actions = append(actions, writeFileAction("Write "+file.Path, file.Path, file.Content, options.Force))
-		}
-	case SourceOfficial:
-		actions = append(actions, def.Official(ctx)...)
-	case SourceManual:
-		actions = append(actions, manualAction("Manual scaffold required", manualSteps(def)))
-	}
+	actions = append(actions, def.Official(ctx)...)
 
 	for i := range actions {
 		actions[i] = finalizeAction(actions[i], absDir, def, source)
 	}
 
 	metadata := def.metadata(ctx, source)
-	metadata.Files = fileMetadata(files)
 	return &Plan{
 		Directory:       absDir,
 		Template:        metadata,
@@ -178,28 +169,28 @@ func Generate(template, dir string, options Options) (*Plan, error) {
 
 func registry() map[string]templateDef {
 	defs := []templateDef{
-		internalTemplate("node", "Node.js", "", "node", "npm", "Minimal Node.js application", nodeFiles),
+		internalTemplate("node", "Node.js", "", "node", "npm", "Minimal Node.js application", nodeFiles).withOfficial(false, official("Initialize npm package", "npm", "init", "-y")),
 		internalTemplate("express", "Node.js", "Express", "node", "npm", "Express HTTP API starter", expressFiles),
 		internalTemplate("react-vite", "Node.js", "React + Vite", "node", "npm", "React Vite starter", reactViteFiles).withOfficial(true, official("Run Vite React generator", "npm", "create", "vite@latest", ".", "--", "--template", "react")),
 		internalTemplate("vue-vite", "Node.js", "Vue + Vite", "node", "npm", "Vue Vite starter", vueViteFiles).withOfficial(true, official("Run Vite Vue generator", "npm", "create", "vite@latest", ".", "--", "--template", "vue")),
 		internalTemplate("next", "Node.js", "Next.js", "node", "npm", "Next.js app router starter", nextFiles).withOfficial(true, official("Run Next.js generator", "npx", "create-next-app@latest", ".", "--yes", "--use-npm", "--typescript", "--eslint", "--app", "--src-dir")),
-		internalTemplate("sveltekit", "Node.js", "SvelteKit", "node", "npm", "SvelteKit starter", svelteKitFiles),
+		internalTemplate("sveltekit", "Node.js", "SvelteKit", "node", "npm", "SvelteKit starter", svelteKitFiles).withOfficial(true, official("Run SvelteKit generator", "npx", "sv", "create", ".", "--template", "minimal", "--types", "ts", "--no-add-ons", "--no-install")),
 		internalTemplate("nestjs", "Node.js", "NestJS", "node", "npm", "NestJS starter", nestFiles).withOfficial(true, official("Run NestJS generator", "npx", "@nestjs/cli", "new", ".", "--package-manager", "npm", "--skip-git", "--strict")),
 		internalTemplate("python", "Python", "", "python", "pip", "Python package starter", pythonPackageFiles),
 		internalTemplate("python-cli", "Python", "CLI", "python", "pip", "Python CLI starter", pythonCLIFiles),
 		internalTemplate("fastapi", "Python", "FastAPI", "python", "pip", "FastAPI application starter", fastAPIFiles),
 		internalTemplate("flask", "Python", "Flask", "python", "pip", "Flask application starter", flaskFiles),
-		internalTemplate("go", "Go", "Module", "go", "go modules", "Go module starter", goModuleFiles),
-		internalTemplate("go-module", "Go", "Module", "go", "go modules", "Go module starter", goModuleFiles),
+		internalTemplate("go", "Go", "Module", "go", "go modules", "Go module starter", goModuleFiles).withOfficial(false, officialGoModInit),
+		internalTemplate("go-module", "Go", "Module", "go", "go modules", "Go module starter", goModuleFiles).withOfficial(false, officialGoModInit),
 		internalTemplate("go-cli", "Go", "CLI", "go", "go modules", "Go CLI starter", goCLIFiles),
 		internalTemplate("go-web", "Go", "HTTP", "go", "go modules", "Go HTTP server starter", goWebFiles),
 		internalTemplate("rust", "Rust", "CLI", "rust", "cargo", "Rust CLI starter", rustCLIFiles).withOfficial(false, official("Run Cargo init", "cargo", "init", ".")),
 		internalTemplate("rust-cli", "Rust", "CLI", "rust", "cargo", "Rust CLI starter", rustCLIFiles).withOfficial(false, official("Run Cargo init", "cargo", "init", ".")),
-		internalTemplate("rust-lib", "Rust", "Library", "rust", "cargo", "Rust library starter", rustLibFiles),
+		internalTemplate("rust-lib", "Rust", "Library", "rust", "cargo", "Rust library starter", rustLibFiles).withOfficial(false, official("Run Cargo library init", "cargo", "init", "--lib", ".")),
 		internalTemplate("rust-web", "Rust", "Axum", "rust", "cargo", "Rust web service starter", rustWebFiles),
 		internalTemplate("php", "PHP", "Composer", "php", "composer", "PHP Composer starter", phpComposerFiles),
 		internalTemplate("php-composer", "PHP", "Composer", "php", "composer", "PHP Composer starter", phpComposerFiles),
-		manualTemplate("laravel", "PHP", "Laravel", "php", "composer", "Run composer create-project laravel/laravel after confirming network and PHP extension requirements."),
+		officialOnly("laravel", "PHP", "Laravel", "php", "composer", "Laravel application starter", true, official("Run Laravel Composer generator", "composer", "create-project", "laravel/laravel", ".")),
 		internalTemplate("java-maven", "Java", "Maven", "jvm", "maven", "Java Maven starter", javaMavenFiles),
 		internalTemplate("java-gradle", "Java", "Gradle", "jvm", "gradle", "Java Gradle starter", javaGradleFiles),
 		internalTemplate("kotlin-gradle", "Kotlin", "Gradle", "jvm", "gradle", "Kotlin Gradle starter", kotlinGradleFiles),
@@ -249,7 +240,7 @@ func (def templateDef) withOfficial(network bool, actions func(context) []execut
 
 func (def templateDef) metadata(ctx context, source string) Template {
 	files := []FileMetadata{}
-	if def.Internal != nil {
+	if source == SourceInternal && def.Internal != nil {
 		files = fileMetadata(def.Internal(ctx))
 	}
 	selectedSource := valueOrDefault(source, def.DefaultSource)
@@ -269,40 +260,26 @@ func (def templateDef) metadata(ctx context, source string) Template {
 
 func chooseSource(def templateDef, requested string) (string, error) {
 	requested = normalizeTemplate(valueOrDefault(requested, SourceAuto))
-	if requested == SourceAuto {
-		return def.DefaultSource, nil
-	}
 	switch requested {
-	case SourceInternal:
-		if def.Internal == nil {
-			return "", fmt.Errorf("template %s does not provide an internal scaffold", def.ID)
-		}
-	case SourceOfficial:
+	case SourceAuto, SourceOfficial:
 		if def.Official == nil {
-			return "", fmt.Errorf("template %s does not provide an official generator", def.ID)
+			return "", fmt.Errorf("template %s does not provide a safe official generator; run envdoctor project templates to list official starters", def.ID)
 		}
+		return SourceOfficial, nil
+	case SourceInternal:
+		return "", fmt.Errorf("scaffold source %q is disabled; project init supports official generators only", requested)
 	case SourceManual:
-		if def.ManualSteps == "" {
-			return "", fmt.Errorf("template %s does not provide manual scaffold steps", def.ID)
-		}
+		return "", fmt.Errorf("scaffold source %q is disabled; project init supports official generators only", requested)
 	default:
-		return "", fmt.Errorf("unsupported scaffold source %q; use auto, internal, official, or manual", requested)
+		return "", fmt.Errorf("unsupported scaffold source %q; use auto or official", requested)
 	}
-	return requested, nil
 }
 
 func availableSources(def templateDef) []string {
-	var sources []string
-	if def.Internal != nil {
-		sources = append(sources, SourceInternal)
+	if def.Official == nil {
+		return nil
 	}
-	if def.Official != nil {
-		sources = append(sources, SourceOfficial)
-	}
-	if def.ManualSteps != "" {
-		sources = append(sources, SourceManual)
-	}
-	return sources
+	return []string{SourceOfficial}
 }
 
 func prepareDirectory(dir string, create bool) (string, bool, error) {
@@ -354,6 +331,48 @@ func validateFiles(root string, files []fileTemplate, force bool) error {
 	return nil
 }
 
+func validateOfficialGuards(root string, paths []string, force bool) error {
+	if force {
+		return nil
+	}
+	for _, path := range paths {
+		clean, err := cleanRelativePath(path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(root, filepath.FromSlash(clean))
+		if _, err := os.Stat(target); err == nil {
+			return fmt.Errorf("official scaffold target exists; pass --force to allow generator overwrite: %s", path)
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func officialGuardFiles(def templateDef, ctx context) []string {
+	switch def.ID {
+	case "node", "react-vite", "vue-vite", "next", "sveltekit", "nestjs":
+		return []string{"package.json"}
+	case "go", "go-module":
+		return []string{"go.mod"}
+	case "rust", "rust-cli", "rust-lib":
+		return []string{"Cargo.toml"}
+	case "php", "php-composer", "laravel":
+		return []string{"composer.json"}
+	case "dotnet", "dotnet-console", "dotnet-webapi":
+		return []string{ctx.Pascal + ".csproj"}
+	case "dart", "dart-console", "flutter", "flutter-app":
+		return []string{"pubspec.yaml"}
+	case "swift":
+		return []string{"Package.swift"}
+	case "elixir":
+		return []string{"mix.exs"}
+	default:
+		return nil
+	}
+}
+
 func finalizeAction(action executor.Action, dir string, def templateDef, source string) executor.Action {
 	action.Source = valueOrDefault(action.Source, "scaffold")
 	action.Category = valueOrDefault(action.Category, "Project")
@@ -388,8 +407,48 @@ func manualAction(title, steps string) executor.Action {
 
 func official(title, command string, args ...string) func(context) []executor.Action {
 	return func(context) []executor.Action {
-		return []executor.Action{{Type: "command", Title: title, Command: command, Args: args, Source: "scaffold"}}
+		return []executor.Action{officialAction(title, command, args...)}
 	}
+}
+
+func officialGoModInit(ctx context) []executor.Action {
+	return []executor.Action{officialAction("Initialize Go module", "go", "mod", "init", ctx.Module)}
+}
+
+func officialAction(title, command string, args ...string) executor.Action {
+	return executor.Action{
+		Type:        "command",
+		Title:       title,
+		Command:     command,
+		Args:        args,
+		Source:      "scaffold",
+		ManualSteps: installHint(command),
+	}
+}
+
+func installHint(command string) string {
+	tool := command
+	switch strings.ToLower(command) {
+	case "npm", "npx":
+		tool = "node"
+	case "cargo":
+		tool = "rust"
+	case "composer":
+		tool = "composer"
+	case "go":
+		tool = "go"
+	case "dotnet":
+		tool = "dotnet"
+	case "dart":
+		tool = "dart"
+	case "flutter":
+		tool = "flutter"
+	case "swift":
+		tool = "swift"
+	case "mix":
+		tool = "elixir"
+	}
+	return fmt.Sprintf("If %s is missing, run: envdoctor install plan %s --json", command, tool)
 }
 
 func fileMetadata(files []fileTemplate) []FileMetadata {

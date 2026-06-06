@@ -763,7 +763,7 @@ func isAllowlisted(commandName string, args []string) bool {
 	case "npm", "yarn", "pnpm", "bun":
 		return allowNodePackageCommand(name, args)
 	case "npx":
-		return len(args) > 0 && (strings.HasPrefix(args[0], "create-") || strings.Contains(args[0], "@nestjs/cli"))
+		return allowNPXCommand(args)
 	case "python", "python3":
 		return allowPythonCommand(args)
 	case "go":
@@ -771,7 +771,7 @@ func isAllowlisted(commandName string, args []string) bool {
 	case "cargo":
 		return hasAnyPrefix(args, "fetch", "init", "add", "update", "remove")
 	case "composer":
-		return hasAnyPrefix(args, "install", "init", "require", "update", "remove")
+		return hasAnyPrefix(args, "install", "init", "require", "update", "remove", "create-project")
 	case "mvn":
 		return hasAnyPrefix(args, "dependency:resolve", "archetype:generate")
 	case "gradle":
@@ -1191,6 +1191,16 @@ func allowNodePackageCommand(name string, args []string) bool {
 	default:
 		return false
 	}
+}
+
+func allowNPXCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if strings.HasPrefix(args[0], "create-") || strings.Contains(args[0], "@nestjs/cli") {
+		return true
+	}
+	return len(args) >= 2 && args[0] == "sv" && args[1] == "create"
 }
 
 func allowPythonCommand(args []string) bool {

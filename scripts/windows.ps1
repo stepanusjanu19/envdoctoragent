@@ -252,6 +252,8 @@ function Invoke-Smoke {
     $projectNodeDir = Join-Path $SmokeDir "project-node"
     $projectYesDir = Join-Path $SmokeDir "project-yes"
     $scaffoldReactDir = Join-Path $SmokeDir "scaffold-react"
+    $scaffoldLaravelDir = Join-Path $SmokeDir "scaffold-laravel"
+    $scaffoldGoWebDir = Join-Path $SmokeDir "scaffold-go-web"
     $scaffoldGoDir = Join-Path $SmokeDir "scaffold-go"
     $scaffoldPythonDir = Join-Path $SmokeDir "scaffold-python"
     $scaffoldConflictDir = Join-Path $SmokeDir "scaffold-conflict"
@@ -259,7 +261,7 @@ function Invoke-Smoke {
     $agentScaffoldYesDir = Join-Path $SmokeDir "agent-scaffold-yes"
     $agentProdBlockDir = Join-Path $SmokeDir "agent-prod-block"
     $dependencyDir = Join-Path $SmokeDir "dependencies"
-    foreach ($path in @($projectEmptyDir, $projectNodeDir, $projectYesDir, $scaffoldReactDir, $scaffoldGoDir, $scaffoldPythonDir, $scaffoldConflictDir, $agentScaffoldPlanDir, $agentScaffoldYesDir, $agentProdBlockDir)) {
+    foreach ($path in @($projectEmptyDir, $projectNodeDir, $projectYesDir, $scaffoldReactDir, $scaffoldLaravelDir, $scaffoldGoWebDir, $scaffoldGoDir, $scaffoldPythonDir, $scaffoldConflictDir, $agentScaffoldPlanDir, $agentScaffoldYesDir, $agentProdBlockDir)) {
         if (Test-Path $path) {
             Remove-Item -Recurse -Force $path
         }
@@ -393,35 +395,42 @@ function Invoke-Smoke {
     $bootstrapPlan = Invoke-GoOutput @("run", $Pkg, "bootstrap", "plan", "--json", $bootstrapDir)
     $projectScan = Invoke-GoOutput @("run", $Pkg, "project", "scan", "--json", $projectNodeDir)
     $projectTemplates = Invoke-GoOutput @("run", $Pkg, "project", "templates", "--json")
+    $templateSources = @($projectTemplates | ConvertFrom-Json | ForEach-Object { $_.source })
+    if ($templateSources -contains "internal" -or $templateSources -contains "manual") {
+        throw "Project templates exposed internal/manual scaffold source"
+    }
     $projectInitPlan = Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "node", "--json", $projectEmptyDir)
-    $scaffoldReactPlan = Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "react-vite", "--json", $scaffoldReactDir)
+    $scaffoldReactPlan = Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "react-vite", "--json", "--create-dir", $scaffoldReactDir)
+    if (($scaffoldReactPlan | ConvertFrom-Json).source -ne "official") {
+        throw "React Vite scaffold plan is not official"
+    }
+    $scaffoldLaravelPlan = Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "laravel", "--json", "--create-dir", $scaffoldLaravelDir)
+    if (($scaffoldLaravelPlan | ConvertFrom-Json).source -ne "official") {
+        throw "Laravel scaffold plan is not official"
+    }
+    try {
+        Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "go-web", "--json", "--create-dir", $scaffoldGoWebDir) | Out-Null
+        throw "Project scaffold unexpectedly exposed go-web without a safe official generator"
+    } catch {
+        if ($_.Exception.Message -eq "Project scaffold unexpectedly exposed go-web without a safe official generator") {
+            throw
+        }
+    }
     $projectInitApplyAudit = Join-Path $SmokeDir "project-init-apply-audit.jsonl"
     $projectDepsApplyAudit = Join-Path $SmokeDir "project-deps-apply-audit.jsonl"
     $projectInitYesAudit = Join-Path $SmokeDir "project-init-yes-audit.jsonl"
-    $projectInitApply = Invoke-GoOutput @("run", $Pkg, "project", "init", "apply", "go", "--dry-run", "--json", "--audit-log", $projectInitApplyAudit, $projectEmptyDir)
     $beforeScaffoldCount = (Get-ChildItem -Force -Path $scaffoldGoDir | Measure-Object).Count
-    $scaffoldGoDryRun = Invoke-GoOutput @("run", $Pkg, "project", "init", "apply", "go-web", "--dry-run", "--json", $scaffoldGoDir)
+    $projectInitApply = Invoke-GoOutput @("run", $Pkg, "project", "init", "apply", "react-vite", "--dry-run", "--json", "--audit-log", $projectInitApplyAudit, $scaffoldGoDir)
     $afterScaffoldCount = (Get-ChildItem -Force -Path $scaffoldGoDir | Measure-Object).Count
     if ($beforeScaffoldCount -ne $afterScaffoldCount) {
         throw "Project scaffold dry-run created files"
     }
-    $scaffoldPythonAudit = Join-Path $SmokeDir "scaffold-python-audit.jsonl"
-    $scaffoldPythonApply = Invoke-GoOutput @("run", $Pkg, "project", "init", "apply", "python-cli", "--yes", "--json", "--create-dir", "--audit-log", $scaffoldPythonAudit, $scaffoldPythonDir)
-    if (-not (Test-Path (Join-Path $scaffoldPythonDir "pyproject.toml"))) {
-        throw "Python scaffold pyproject.toml was not created"
-    }
-    if (-not (Test-Path (Join-Path $scaffoldPythonDir "src/scaffold_python/__main__.py"))) {
-        throw "Python scaffold entrypoint was not created"
-    }
-    if (-not (($scaffoldPythonApply | ConvertFrom-Json).project_snapshot_file)) {
-        throw "Python scaffold --yes did not report a project snapshot"
-    }
     "module example.com/conflict" | Set-Content -Path (Join-Path $scaffoldConflictDir "go.mod") -Encoding UTF8
     try {
-        Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "go-web", "--allow-non-empty", $scaffoldConflictDir) | Out-Null
-        throw "Project scaffold unexpectedly allowed overwrite without --force"
+        Invoke-GoOutput @("run", $Pkg, "project", "init", "plan", "go", "--allow-non-empty", $scaffoldConflictDir) | Out-Null
+        throw "Project scaffold unexpectedly allowed Go init over an existing module"
     } catch {
-        if ($_.Exception.Message -eq "Project scaffold unexpectedly allowed overwrite without --force") {
+        if ($_.Exception.Message -eq "Project scaffold unexpectedly allowed Go init over an existing module") {
             throw
         }
     }
@@ -434,6 +443,7 @@ function Invoke-Smoke {
         }
     }
     $projectDepsSync = Invoke-GoOutput @("run", $Pkg, "project", "deps", "plan", "sync", "--json", $projectNodeDir)
+    $projectDepsSyncGo = Invoke-GoOutput @("run", $Pkg, "project", "deps", "plan", "sync", "--ecosystem", "go", "--json", $goDir)
     $projectDepsInstall = Invoke-GoOutput @("run", $Pkg, "project", "deps", "plan", "install", "lodash", "--ecosystem", "node", "--json", $projectNodeDir)
     $projectDepsUpdate = Invoke-GoOutput @("run", $Pkg, "project", "deps", "plan", "update", "lodash", "--ecosystem", "node", "--json", $projectNodeDir)
     $projectDepsRemove = Invoke-GoOutput @("run", $Pkg, "project", "deps", "plan", "remove", "lodash", "--ecosystem", "node", "--json", $projectNodeDir)
@@ -445,6 +455,9 @@ function Invoke-Smoke {
         throw "Project deps dry-run mutated package.json"
     }
     $projectInitYes = Invoke-GoOutput @("run", $Pkg, "project", "init", "apply", "go", "--yes", "--json", "--audit-log", $projectInitYesAudit, $projectYesDir)
+    if (-not (Test-Path (Join-Path $projectYesDir "go.mod"))) {
+        throw "Go scaffold go.mod was not created"
+    }
     if (-not (($projectInitYes | ConvertFrom-Json).project_snapshot_file)) {
         throw "Project init --yes did not report a project snapshot"
     }
@@ -488,19 +501,16 @@ function Invoke-Smoke {
     $agentProdBlockAudit = Join-Path $SmokeDir "agent-prod-block-audit.jsonl"
     $agentPlanDiagnose = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--json", "--goal", "diagnose", "--profile", "development")
     $agentPlanOnboard = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--json", "--goal", "onboard", $projectNodeDir)
-    $agentPlanScaffold = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--json", "--goal", "scaffold", "--template", "go-web", "--create-dir", $agentScaffoldPlanDir)
+    $agentPlanScaffold = Invoke-GoOutput @("run", $Pkg, "agent", "plan", "--json", "--goal", "scaffold", "--template", "react-vite", "--create-dir", $agentScaffoldPlanDir)
     $agentRunRepair = Invoke-GoOutput @("run", $Pkg, "agent", "run", "--dry-run", "--json", "--goal", "repair", $projectNodeDir)
-    $agentRunScaffold = Invoke-GoOutput @("run", $Pkg, "agent", "run", "--yes", "--json", "--goal", "scaffold", "--template", "python-cli", "--create-dir", "--audit-log", $agentScaffoldYesAudit, $agentScaffoldYesDir)
-    if (-not (Test-Path (Join-Path $agentScaffoldYesDir "pyproject.toml"))) {
-        throw "Agent scaffold pyproject.toml was not created"
-    }
-    if (-not (Test-Path (Join-Path $agentScaffoldYesDir "src/agent_scaffold_yes/__main__.py"))) {
-        throw "Agent scaffold entrypoint was not created"
+    $agentRunScaffold = Invoke-GoOutput @("run", $Pkg, "agent", "run", "--yes", "--json", "--goal", "scaffold", "--template", "go", "--create-dir", "--audit-log", $agentScaffoldYesAudit, $agentScaffoldYesDir)
+    if (-not (Test-Path (Join-Path $agentScaffoldYesDir "go.mod"))) {
+        throw "Agent scaffold go.mod was not created"
     }
     if (-not (($agentRunScaffold | ConvertFrom-Json).execution.project_snapshot_file)) {
         throw "Agent scaffold --yes did not report a project snapshot"
     }
-    $agentRunProdBlock = Invoke-GoOutput @("run", $Pkg, "agent", "run", "--yes", "--json", "--profile", "production", "--goal", "scaffold", "--template", "python-cli", "--create-dir", "--audit-log", $agentProdBlockAudit, $agentProdBlockDir)
+    $agentRunProdBlock = Invoke-GoOutput @("run", $Pkg, "agent", "run", "--yes", "--json", "--profile", "production", "--goal", "scaffold", "--template", "go", "--create-dir", "--audit-log", $agentProdBlockAudit, $agentProdBlockDir)
     if (Test-Path $agentProdBlockDir) {
         throw "Production agent scaffold created a project directory despite policy block"
     }
@@ -517,9 +527,6 @@ function Invoke-Smoke {
         if (-not (Test-Path $auditPath) -or (Get-Item $auditPath).Length -eq 0) {
             throw "Project audit log was not created: $auditPath"
         }
-    }
-    if (-not (Test-Path $scaffoldPythonAudit) -or (Get-Item $scaffoldPythonAudit).Length -eq 0) {
-        throw "Scaffold audit log was not created: $scaffoldPythonAudit"
     }
     foreach ($auditPath in @($agentScaffoldYesAudit, $agentProdBlockAudit)) {
         if (-not (Test-Path $auditPath) -or (Get-Item $auditPath).Length -eq 0) {
@@ -568,10 +575,10 @@ function Invoke-Smoke {
     $projectTemplates | ConvertFrom-Json | Out-Null
     $projectInitPlan | ConvertFrom-Json | Out-Null
     $scaffoldReactPlan | ConvertFrom-Json | Out-Null
+    $scaffoldLaravelPlan | ConvertFrom-Json | Out-Null
     $projectInitApply | ConvertFrom-Json | Out-Null
-    $scaffoldGoDryRun | ConvertFrom-Json | Out-Null
-    $scaffoldPythonApply | ConvertFrom-Json | Out-Null
     $projectDepsSync | ConvertFrom-Json | Out-Null
+    $projectDepsSyncGo | ConvertFrom-Json | Out-Null
     $projectDepsInstall | ConvertFrom-Json | Out-Null
     $projectDepsUpdate | ConvertFrom-Json | Out-Null
     $projectDepsRemove | ConvertFrom-Json | Out-Null
